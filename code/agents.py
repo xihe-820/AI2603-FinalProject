@@ -485,114 +485,62 @@ class EnhancedMinimaxPolicy(Policy):
         super().__init__(observation_space, action_space, config)
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
-        self.max_depth = max_depth
-        
-        n = triangle_size
-        # 预计算目标区域 (player 0的目标在下方)
-        self.target_coords = set()
-        offset = np.array([-n, n + 1, -1])
-        for i in range(n):
-            for j in range(0, n - i):
-                coord = offset + np.array([j, i, -i - j])
-                self.target_coords.add((coord[0], coord[1]))
-        
-        # 预计算起始区域
-        self.home_coords = set()
-        offset = np.array([1, -n - 1, n])
-        for i in range(n):
-            for j in range(i, n):
-                coord = offset + np.array([j, -i, i - j])
-                self.home_coords.add((coord[0], coord[1]))
-        
-        # 目标区域的r坐标范围
-        self.target_r_min = min(t[1] for t in self.target_coords)
-        self.target_r_max = max(t[1] for t in self.target_coords)
-        self.target_q_center = sum(t[0] for t in self.target_coords) / len(self.target_coords)
+        self.n = triangle_size
     
     def _obs_to_pieces(self, obs):
-        n = self.triangle_size
+        n = self.n
         board_size = 4 * n + 1
         observation = obs["observation"].reshape(board_size, board_size, 4)
         
-        player0_pieces = []
-        player3_pieces = []
+        my_pieces = []
+        opp_pieces = []
         
         for q in range(board_size):
             for r in range(board_size):
                 if observation[q, r, 0] == 1:
-                    player0_pieces.append((q - 2*n, r - 2*n))
+                    my_pieces.append((q - 2*n, r - 2*n))
                 if observation[q, r, 1] == 1:
-                    player3_pieces.append((q - 2*n, r - 2*n))
+                    opp_pieces.append((q - 2*n, r - 2*n))
         
         has_jump = np.any(observation[:, :, 2] == 1)
-        last_jump_dest = None
-        for q in range(board_size):
-            for r in range(board_size):
-                if observation[q, r, 3] == 1:
-                    last_jump_dest = (q - 2*n, r - 2*n)
-                    break
         
-        return player0_pieces, player3_pieces, has_jump, last_jump_dest
+        return my_pieces, opp_pieces, has_jump
 
-    def _evaluate_position(self, my_pieces, opp_pieces):
-        n = self.triangle_size
-        total_pieces = n * (n + 1) // 2
+    def _score_move(self, move, my_pieces, has_jump, num_legal):
+        if move == Move.END_TURN:
+            if has_jump and num_legal > 1:
+                return -1000  # 有跳跃机会不要结束
+            return -10
+        
+        src = move.position
+        dst = move.moved_position()
         score = 0.0
         
-        in_target = 0
-        for piece in my_pieces:
-            q, r = piece
-            
-            if piece in self.target_coords:
-                in_target += 1
-                score += 500  # 在目标区域内
+        # 核心：向下移动的距离 (r增加)
+        delta_r = dst.r - src.r
+        
+        if delta_r > 0:
+            # 向前移动
+            score += delta_r * 100
+            if move.is_jump:
+                score += 50  # 跳跃更好
+        elif delta_r < 0:
+            # 向后移动 - 严重惩罚
+            score += delta_r * 150
+        else:
+            # 水平移动
+            if move.is_jump:
+                score += 20  # 水平跳可能为后续准备
             else:
-                # 主要指标：r坐标进度
-                score += r * 30
-                
-                # 离目标区域的距离
-                if r < self.target_r_min:
-                    dist_to_target = self.target_r_min - r
-                    score -= dist_to_target * 10
-                
-                # 横向位置：靠近中心路径
-                q_dist_to_center = abs(q - self.target_q_center)
-                score -= q_dist_to_center * 5
-                
-                # 仍在起始区的惩罚
-                if piece in self.home_coords:
-                    score -= 50
+                score += 5
         
-        # 胜利
-        if in_target == total_pieces:
-            return 100000
-        
-        # 领先奖励
-        score += in_target * 100
-        
-        # 对手进度惩罚
-        opp_in_target = 0
-        for piece in opp_pieces:
-            if piece in self.home_coords:
-                opp_in_target += 1
-        score -= opp_in_target * 80
+        # 方向奖励
+        if move.direction in [Direction.DownLeft, Direction.DownRight]:
+            score += 30
+        elif move.direction in [Direction.UpLeft, Direction.UpRight]:
+            score -= 50
         
         return score
-
-    def _simulate_move(self, my_pieces, move):
-        if move == Move.END_TURN:
-            return my_pieces
-        
-        new_pieces = list(my_pieces)
-        src = (move.position.q, move.position.r)
-        dst = move.moved_position()
-        dst = (dst.q, dst.r)
-        
-        if src in new_pieces:
-            new_pieces.remove(src)
-            new_pieces.append(dst)
-        
-        return new_pieces
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
@@ -600,7 +548,7 @@ class EnhancedMinimaxPolicy(Policy):
         
         for obs in obs_batch:
             action_mask = obs["action_mask"]
-            my_pieces, opp_pieces, has_jump, last_jump_dest = self._obs_to_pieces(obs)
+            my_pieces, opp_pieces, has_jump = self._obs_to_pieces(obs)
             
             legal_indices = np.where(action_mask == 1)[0]
             
@@ -611,60 +559,9 @@ class EnhancedMinimaxPolicy(Policy):
             best_action_idx = legal_indices[0]
             best_score = float('-inf')
             
-            # 分析当前跳跃链
-            can_continue_jump = has_jump and last_jump_dest is not None
-            
             for action_idx in legal_indices:
-                move = action_to_move(action_idx, self.triangle_size)
-                
-                new_my_pieces = self._simulate_move(my_pieces, move)
-                score = self._evaluate_position(new_my_pieces, opp_pieces)
-                
-                if move != Move.END_TURN:
-                    dst = move.moved_position()
-                    src = move.position
-                    delta_r = dst.r - src.r
-                    
-                    # 向前移动基础奖励
-                    if delta_r > 0:
-                        score += delta_r * 40
-                        if move.is_jump:
-                            score += 50  # 跳跃额外奖励
-                    elif delta_r < 0:
-                        score -= abs(delta_r) * 60  # 后退严重惩罚
-                    else:
-                        # 水平移动
-                        if move.is_jump:
-                            score += 15  # 水平跳跃可能为连跳做准备
-                    
-                    # 进入目标区域的额外奖励
-                    dst_tuple = (dst.q, dst.r)
-                    src_tuple = (src.q, src.r)
-                    if dst_tuple in self.target_coords and src_tuple not in self.target_coords:
-                        score += 150
-                    
-                    # 离开目标区域的惩罚
-                    if src_tuple in self.target_coords and dst_tuple not in self.target_coords:
-                        score -= 200
-                    
-                    # 连跳奖励
-                    if can_continue_jump and move.is_jump:
-                        score += 30
-                        
-                else:
-                    # END_TURN
-                    if can_continue_jump:
-                        # 还有跳跃机会时不要轻易结束
-                        jump_moves = [action_to_move(idx, self.triangle_size) 
-                                     for idx in legal_indices 
-                                     if action_to_move(idx, self.triangle_size) != Move.END_TURN]
-                        forward_jumps = [m for m in jump_moves if m.is_jump and m.moved_position().r > m.position.r]
-                        if forward_jumps:
-                            score -= 100
-                        else:
-                            score -= 10
-                    else:
-                        score -= 5
+                move = action_to_move(action_idx, self.n)
+                score = self._score_move(move, my_pieces, has_jump, len(legal_indices))
                 
                 if score > best_score:
                     best_score = score
