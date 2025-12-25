@@ -36,8 +36,8 @@ def play(args):
     )
 
     if not args.use_rl:
-        # Minimax agent - 使用MinimaxPolicy
-        your_policy = MinimaxPolicy(args.triangle_size)
+        # Minimax agent - 使用EnhancedMinimaxPolicy
+        your_policy = EnhancedMinimaxPolicy(args.triangle_size)
     else:
         # 若你实现了基于强化学习的agent，在此处导入
         your_policy = load_policy(args.checkpoint)
