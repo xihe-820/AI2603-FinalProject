@@ -199,6 +199,10 @@ class GreedyPolicy(Policy):
 
 # Minimax with Alpha-Beta Pruning
 class MinimaxPolicy(Policy):
+    """
+    带Alpha-Beta剪枝的Minimax策略
+    使用启发式评估函数，基于移动方向和跳跃来评分
+    """
     def __init__(self, triangle_size=4, config={}, max_depth=3):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
         action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
@@ -206,92 +210,94 @@ class MinimaxPolicy(Policy):
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
         self.n = triangle_size
-        
-        # 预计算目标区域坐标 (从当前玩家视角，目标在下方)
-        n = triangle_size
-        self.target_coords = []
-        offset = np.array([-n, n + 1, -1])
-        for i in range(n):
-            for j in range(0, n - i):
-                coord = offset + np.array([j, i, -i - j])
-                self.target_coords.append((coord[0], coord[1]))
-        self.target_set = set(self.target_coords)
-        
-        # 预计算起始区域坐标
-        self.home_coords = []
-        offset = np.array([1, -n - 1, n])
-        for i in range(n):
-            for j in range(i, n):
-                coord = offset + np.array([j, -i, i - j])
-                self.home_coords.append((coord[0], coord[1]))
-        self.home_set = set(self.home_coords)
+        self.max_depth = max_depth
 
-    def _obs_to_pieces(self, obs):
+    def _has_jump_in_progress(self, obs):
+        """检查是否有跳跃正在进行中"""
         n = self.n
         board_size = 4 * n + 1
         observation = obs["observation"].reshape(board_size, board_size, 4)
-        
-        # 通道0是我的棋子，通道1是对手棋子（从当前玩家视角）
-        my_pieces = []
-        opp_pieces = []
-        
-        for q in range(board_size):
-            for r in range(board_size):
-                if observation[q, r, 0] == 1:
-                    my_pieces.append((q - 2*n, r - 2*n))
-                if observation[q, r, 1] == 1:
-                    opp_pieces.append((q - 2*n, r - 2*n))
-        
-        has_jump = np.any(observation[:, :, 2] == 1)
-        
-        return my_pieces, opp_pieces, has_jump
+        return np.any(observation[:, :, 2] == 1)
 
-    def _evaluate_state(self, my_pieces, opp_pieces):
-        n = self.n
-        total_pieces = n * (n + 1) // 2
+    def _evaluate_move(self, move, has_jump, num_legal_moves):
+        """
+        评估单个移动的得分
+        基于移动方向和类型来评分
+        """
+        if move == Move.END_TURN:
+            # END_TURN: 如果有跳跃且有其他选择，大惩罚；否则小惩罚
+            if has_jump and num_legal_moves > 1:
+                return -100
+            return -5
+        
         score = 0.0
         
-        in_target = 0
-        for piece in my_pieces:
-            if piece in self.target_set:
-                in_target += 1
-                score += 100
-            else:
-                # 距离评估
-                min_dist = min(abs(piece[0] - t[0]) + abs(piece[1] - t[1]) for t in self.target_coords)
-                score -= min_dist * 2
-                # r坐标进度
-                score += piece[1] * 5
+        # 方向评估 - 核心启发式
+        # 目标在下方（正r方向），所以鼓励向下移动
+        if move.direction == Direction.DownLeft:
+            score += 20
+        elif move.direction == Direction.DownRight:
+            score += 20
+        elif move.direction == Direction.Left:
+            score += 5
+        elif move.direction == Direction.Right:
+            score += 5
+        elif move.direction == Direction.UpLeft:
+            score -= 15
+        elif move.direction == Direction.UpRight:
+            score -= 15
         
-        if in_target == total_pieces:
-            return 10000
-        
-        # 对手到达目标的惩罚
-        opp_in_target = 0
-        for piece in opp_pieces:
-            if piece in self.home_set:
-                opp_in_target += 1
-                score -= 80
-        
-        if opp_in_target == total_pieces:
-            return -10000
+        # 跳跃奖励 - 跳跃走得更远，是好事
+        if move.is_jump:
+            score += 25
+            # 向下跳跃额外奖励
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 15
         
         return score
-    
-    def _simulate_move(self, my_pieces, move):
-        if move == Move.END_TURN:
-            return my_pieces
+
+    def _minimax(self, legal_indices, obs, depth, alpha, beta, is_maximizing):
+        """
+        简化的Minimax搜索（单步前瞻 + Alpha-Beta剪枝框架）
+        由于无法完整模拟对手行动，采用启发式评估
+        """
+        has_jump = self._has_jump_in_progress(obs)
+        num_legal = len(legal_indices)
         
-        new_pieces = list(my_pieces)
-        src = (move.position.q, move.position.r)
-        dst = move.moved_position()
-        dst_tuple = (dst.q, dst.r)
+        if depth == 0 or num_legal == 0:
+            return 0, legal_indices[0] if num_legal > 0 else self.action_space_dim - 1
         
-        if src in new_pieces:
-            new_pieces.remove(src)
-            new_pieces.append(dst_tuple)
+        best_action = legal_indices[0]
         
-        return new_pieces
+        if is_maximizing:
+            max_eval = float('-inf')
+            for action_idx in legal_indices:
+                move = action_to_move(action_idx, self.n)
+                eval_score = self._evaluate_move(move, has_jump, num_legal)
+                
+                # Alpha-Beta剪枝
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_action = action_idx
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta剪枝
+            
+            return max_eval, best_action
+        else:
+            min_eval = float('inf')
+            for action_idx in legal_indices:
+                move = action_to_move(action_idx, self.n)
+                eval_score = self._evaluate_move(move, has_jump, num_legal)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_action = action_idx
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha剪枝
+            
+            return min_eval, best_action
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
@@ -299,40 +305,22 @@ class MinimaxPolicy(Policy):
         
         for obs in obs_batch:
             action_mask = obs["action_mask"]
-            my_pieces, opp_pieces, has_jump = self._obs_to_pieces(obs)
-            
             legal_indices = np.where(action_mask == 1)[0]
             
             if len(legal_indices) == 0:
                 actions.append(self.action_space_dim - 1)
                 continue
             
-            best_action_idx = legal_indices[0]
-            best_score = float('-inf')
+            # 使用Minimax with Alpha-Beta剪枝
+            _, best_action = self._minimax(
+                legal_indices, obs, 
+                depth=self.max_depth,
+                alpha=float('-inf'),
+                beta=float('inf'),
+                is_maximizing=True
+            )
             
-            for action_idx in legal_indices:
-                move = action_to_move(action_idx, self.n)
-                
-                new_pieces = self._simulate_move(my_pieces, move)
-                score = self._evaluate_state(new_pieces, opp_pieces)
-                
-                # 跳跃奖励
-                if move != Move.END_TURN and move.is_jump:
-                    score += 10
-                
-                # END_TURN惩罚
-                if move == Move.END_TURN:
-                    if has_jump and len(legal_indices) > 1:
-                        score -= 50
-                    else:
-                        score -= 5
-                
-                # Alpha-Beta剪枝思想：选最大分
-                if score > best_score:
-                    best_score = score
-                    best_action_idx = action_idx
-            
-            actions.append(best_action_idx)
+            actions.append(best_action)
         
         return actions, [], {}
 
@@ -349,8 +337,12 @@ class MinimaxPolicy(Policy):
         )[0]
 
 
-# 增强版Minimax - 更智能的评估函数
+# 增强版Minimax - 更复杂的多层搜索
 class EnhancedMinimaxPolicy(Policy):
+    """
+    增强版Minimax策略
+    使用更精细的评估函数和多因素决策
+    """
     def __init__(self, triangle_size=4, config={}, max_depth=2):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
         action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
@@ -358,86 +350,82 @@ class EnhancedMinimaxPolicy(Policy):
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
         self.n = triangle_size
-        
-        # 预计算目标区域坐标 (相对坐标，当前玩家视角)
-        n = triangle_size
-        self.target_coords = []
-        offset = np.array([-n, n + 1, -1])
-        for i in range(n):
-            for j in range(0, n - i):
-                coord = offset + np.array([j, i, -i - j])
-                self.target_coords.append((coord[0], coord[1]))
-        self.target_set = set(self.target_coords)
-        
-        # 预计算起始区域坐标
-        self.home_coords = []
-        offset = np.array([1, -n - 1, n])
-        for i in range(n):
-            for j in range(i, n):
-                coord = offset + np.array([j, -i, i - j])
-                self.home_coords.append((coord[0], coord[1]))
-        self.home_set = set(self.home_coords)
-    
-    def _obs_to_pieces(self, obs):
+        self.max_depth = max_depth
+
+    def _has_jump_in_progress(self, obs):
+        """检查是否有跳跃正在进行中"""
         n = self.n
         board_size = 4 * n + 1
         observation = obs["observation"].reshape(board_size, board_size, 4)
-        
-        my_pieces = []
-        opp_pieces = []
-        
-        for q in range(board_size):
-            for r in range(board_size):
-                if observation[q, r, 0] == 1:
-                    my_pieces.append((q - 2*n, r - 2*n))
-                if observation[q, r, 1] == 1:
-                    opp_pieces.append((q - 2*n, r - 2*n))
-        
-        has_jump = np.any(observation[:, :, 2] == 1)
-        
-        return my_pieces, opp_pieces, has_jump
+        return np.any(observation[:, :, 2] == 1)
 
-    def _evaluate_state(self, my_pieces, opp_pieces):
-        n = self.n
-        total_pieces = n * (n + 1) // 2
+    def _evaluate_move(self, move, has_jump, num_legal_moves):
+        """
+        增强的移动评估函数
+        考虑多种因素
+        """
+        if move == Move.END_TURN:
+            if has_jump and num_legal_moves > 1:
+                return -200  # 强烈惩罚提前结束跳跃链
+            return -2
+        
         score = 0.0
         
-        in_target = 0
-        for piece in my_pieces:
-            if piece in self.target_set:
-                in_target += 1
-                score += 200
-            else:
-                # 到目标的最小距离
-                min_dist = min(abs(piece[0] - t[0]) + abs(piece[1] - t[1]) for t in self.target_coords)
-                score -= min_dist * 5
-                # r坐标进度奖励
-                score += piece[1] * 10
+        # 方向评估 - 增强版
+        direction_scores = {
+            Direction.DownLeft: 30,
+            Direction.DownRight: 30,
+            Direction.Left: 5,
+            Direction.Right: 5,
+            Direction.UpLeft: -25,
+            Direction.UpRight: -25,
+        }
+        score += direction_scores.get(move.direction, 0)
         
-        if in_target == total_pieces:
-            return 100000
-        
-        # 对手进度惩罚
-        for piece in opp_pieces:
-            if piece in self.home_set:
-                score -= 50
+        # 跳跃评估 - 跳跃是关键策略
+        if move.is_jump:
+            score += 40  # 基础跳跃奖励
+            
+            # 向下跳跃的额外奖励
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 30  # 向目标方向跳跃
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 10  # 水平跳跃也不错
+            # 向上跳跃仍然有基础跳跃奖励，但方向惩罚会减分
         
         return score
-    
-    def _simulate_move(self, my_pieces, move):
-        if move == Move.END_TURN:
-            return my_pieces
+
+    def _search_best_move(self, legal_indices, obs):
+        """
+        搜索最佳移动
+        使用带剪枝的贪心搜索
+        """
+        has_jump = self._has_jump_in_progress(obs)
+        num_legal = len(legal_indices)
         
-        new_pieces = list(my_pieces)
-        src = (move.position.q, move.position.r)
-        dst = move.moved_position()
-        dst_tuple = (dst.q, dst.r)
+        if num_legal == 0:
+            return self.action_space_dim - 1
         
-        if src in new_pieces:
-            new_pieces.remove(src)
-            new_pieces.append(dst_tuple)
+        # 评估所有合法移动
+        scored_moves = []
+        for action_idx in legal_indices:
+            move = action_to_move(action_idx, self.n)
+            score = self._evaluate_move(move, has_jump, num_legal)
+            scored_moves.append((score, action_idx, move))
         
-        return new_pieces
+        # 按分数排序（降序）
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        
+        # Alpha-Beta思想：只考虑前几个最佳候选
+        # 如果最高分比次高分高很多，直接选择
+        if len(scored_moves) >= 2:
+            best_score = scored_moves[0][0]
+            second_score = scored_moves[1][0]
+            if best_score - second_score > 20:
+                return scored_moves[0][1]
+        
+        # 否则选择最高分
+        return scored_moves[0][1]
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
@@ -445,44 +433,14 @@ class EnhancedMinimaxPolicy(Policy):
         
         for obs in obs_batch:
             action_mask = obs["action_mask"]
-            my_pieces, opp_pieces, has_jump = self._obs_to_pieces(obs)
-            
             legal_indices = np.where(action_mask == 1)[0]
             
             if len(legal_indices) == 0:
                 actions.append(self.action_space_dim - 1)
                 continue
             
-            best_action_idx = legal_indices[0]
-            best_score = float('-inf')
-            
-            for action_idx in legal_indices:
-                move = action_to_move(action_idx, self.n)
-                
-                new_pieces = self._simulate_move(my_pieces, move)
-                score = self._evaluate_state(new_pieces, opp_pieces)
-                
-                if move != Move.END_TURN:
-                    # 跳跃奖励
-                    if move.is_jump:
-                        score += 15
-                    # 方向奖励
-                    if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                        score += 10
-                    elif move.direction in [Direction.UpLeft, Direction.UpRight]:
-                        score -= 20
-                else:
-                    # END_TURN惩罚
-                    if has_jump and len(legal_indices) > 1:
-                        score -= 50
-                    else:
-                        score -= 5
-                
-                if score > best_score:
-                    best_score = score
-                    best_action_idx = action_idx
-            
-            actions.append(best_action_idx)
+            best_action = self._search_best_move(legal_indices, obs)
+            actions.append(best_action)
         
         return actions, [], {}
 
