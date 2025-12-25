@@ -72,22 +72,19 @@ def create_config(env_name: str, triangle_size: int = 4, entropy_coeff: float = 
             },
         )
         .training(
-            ###################
-            # TODO: 训练参数配置
-            ###################
-            # train_batch_size=512,
-            # lr=2e-5,
-            # gamma=0.99,
-            # lambda_=0.9,
-            # use_gae=True,
-            # clip_param=0.4,
-            # grad_clip=None,
-            # entropy_coeff_schedule = None,
-            # vf_loss_coeff=0.25,
-            # sgd_minibatch_size=64,
-            # num_sgd_iter=10,
-            entropy_coeff=entropy_coeff,  # 熵系数，控制探索程度
-            _enable_learner_api=True  # 启用新的Learner API
+            # 训练参数配置
+            train_batch_size=512,
+            lr=5e-5,
+            gamma=0.99,
+            lambda_=0.95,
+            use_gae=True,
+            clip_param=0.2,
+            grad_clip=0.5,
+            vf_loss_coeff=0.5,
+            sgd_minibatch_size=64,
+            num_sgd_iter=10,
+            entropy_coeff=entropy_coeff,
+            _enable_learner_api=True
         )
         # 实验性设置：禁用预处理器，因为环境返回的是字典观察
         .experimental(

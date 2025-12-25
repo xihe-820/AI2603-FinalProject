@@ -10,7 +10,7 @@ from ray.rllib.policy.policy import Policy
 from ChineseChecker import chinese_checker_v0
 
 # Policies
-from agents import *
+from agents import GreedyPolicy, MinimaxPolicy, EnhancedMinimaxPolicy
 
 
 def load_policy(
@@ -36,10 +36,8 @@ def play(args):
     )
 
     if not args.use_rl:
-        #############################
-        # TODO: 导入你的minimax agent
-        #############################
-        your_policy = None
+        # Minimax agent
+        your_policy = EnhancedMinimaxPolicy(args.triangle_size)
     else:
         # 若你实现了基于强化学习的agent，在此处导入
         your_policy = load_policy(args.checkpoint)
@@ -89,9 +87,9 @@ def evaluate_20_trials(env, your_policy, baseline_policy, render_mode=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--triangle_size', type=int, default=2)  # 三角区域大小
-    parser.add_argument('--render_mode', type=str, default=None)  # 渲染模式
-    parser.add_argument('--use_rl', action='store_true')  # 渲染模式
-    parser.add_argument('--checkpoint', type=str, required=True)
+    parser.add_argument('--triangle_size', type=int, default=2)
+    parser.add_argument('--render_mode', type=str, default=None)
+    parser.add_argument('--use_rl', action='store_true')
+    parser.add_argument('--checkpoint', type=str, default=None)
     args = parser.parse_args()
     play(args)
