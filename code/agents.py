@@ -486,6 +486,25 @@ class EnhancedMinimaxPolicy(Policy):
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
         self.n = triangle_size
+        
+        # 预计算目标区域坐标 (相对坐标，当前玩家视角)
+        n = triangle_size
+        self.target_coords = []
+        offset = np.array([-n, n + 1, -1])
+        for i in range(n):
+            for j in range(0, n - i):
+                coord = offset + np.array([j, i, -i - j])
+                self.target_coords.append((coord[0], coord[1]))
+        self.target_set = set(self.target_coords)
+        
+        # 预计算起始区域坐标
+        self.home_coords = []
+        offset = np.array([1, -n - 1, n])
+        for i in range(n):
+            for j in range(i, n):
+                coord = offset + np.array([j, -i, i - j])
+                self.home_coords.append((coord[0], coord[1]))
+        self.home_set = set(self.home_coords)
     
     def _obs_to_pieces(self, obs):
         n = self.n
@@ -506,41 +525,47 @@ class EnhancedMinimaxPolicy(Policy):
         
         return my_pieces, opp_pieces, has_jump
 
-    def _score_move(self, move, my_pieces, has_jump, num_legal):
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -1000  # 有跳跃机会不要结束
-            return -10
-        
-        src = move.position
-        dst = move.moved_position()
+    def _evaluate_state(self, my_pieces, opp_pieces):
+        n = self.n
+        total_pieces = n * (n + 1) // 2
         score = 0.0
         
-        # 核心：向下移动的距离 (r增加)
-        delta_r = dst.r - src.r
-        
-        if delta_r > 0:
-            # 向前移动
-            score += delta_r * 100
-            if move.is_jump:
-                score += 50  # 跳跃更好
-        elif delta_r < 0:
-            # 向后移动 - 严重惩罚
-            score += delta_r * 150
-        else:
-            # 水平移动
-            if move.is_jump:
-                score += 20  # 水平跳可能为后续准备
+        in_target = 0
+        for piece in my_pieces:
+            if piece in self.target_set:
+                in_target += 1
+                score += 200
             else:
-                score += 5
+                # 到目标的最小距离
+                min_dist = min(abs(piece[0] - t[0]) + abs(piece[1] - t[1]) for t in self.target_coords)
+                score -= min_dist * 5
+                # r坐标进度奖励
+                score += piece[1] * 10
         
-        # 方向奖励
-        if move.direction in [Direction.DownLeft, Direction.DownRight]:
-            score += 30
-        elif move.direction in [Direction.UpLeft, Direction.UpRight]:
-            score -= 50
+        if in_target == total_pieces:
+            return 100000
+        
+        # 对手进度惩罚
+        for piece in opp_pieces:
+            if piece in self.home_set:
+                score -= 50
         
         return score
+    
+    def _simulate_move(self, my_pieces, move):
+        if move == Move.END_TURN:
+            return my_pieces
+        
+        new_pieces = list(my_pieces)
+        src = (move.position.q, move.position.r)
+        dst = move.moved_position()
+        dst_tuple = (dst.q, dst.r)
+        
+        if src in new_pieces:
+            new_pieces.remove(src)
+            new_pieces.append(dst_tuple)
+        
+        return new_pieces
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
@@ -561,7 +586,25 @@ class EnhancedMinimaxPolicy(Policy):
             
             for action_idx in legal_indices:
                 move = action_to_move(action_idx, self.n)
-                score = self._score_move(move, my_pieces, has_jump, len(legal_indices))
+                
+                new_pieces = self._simulate_move(my_pieces, move)
+                score = self._evaluate_state(new_pieces, opp_pieces)
+                
+                if move != Move.END_TURN:
+                    # 跳跃奖励
+                    if move.is_jump:
+                        score += 15
+                    # 方向奖励
+                    if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                        score += 10
+                    elif move.direction in [Direction.UpLeft, Direction.UpRight]:
+                        score -= 20
+                else:
+                    # END_TURN惩罚
+                    if has_jump and len(legal_indices) > 1:
+                        score -= 50
+                    else:
+                        score -= 5
                 
                 if score > best_score:
                     best_score = score
