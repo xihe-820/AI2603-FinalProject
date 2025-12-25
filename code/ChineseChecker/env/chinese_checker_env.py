@@ -7,7 +7,8 @@ from matplotlib import pyplot as plt
 
 from gymnasium.spaces import Box, Discrete, Dict
 from pettingzoo import AECEnv
-from pettingzoo.utils import agent_selector, wrappers
+from pettingzoo.utils import wrappers
+from pettingzoo.utils.agent_selector import agent_selector
 import pygame
 
 # 导入自定义的游戏类和工具函数
