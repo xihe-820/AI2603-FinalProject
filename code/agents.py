@@ -201,7 +201,7 @@ class GreedyPolicy(Policy):
 class MinimaxPolicy(Policy):
     """
     带Alpha-Beta剪枝的Minimax策略
-    使用启发式评估函数，基于移动方向和跳跃来评分
+    使用启发式评估函数，基于移动方向、跳跃和位置来评分
     """
     def __init__(self, triangle_size=4, config={}, max_depth=3):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -219,47 +219,53 @@ class MinimaxPolicy(Policy):
         observation = obs["observation"].reshape(board_size, board_size, 4)
         return np.any(observation[:, :, 2] == 1)
 
+    def _get_move_destination_r(self, move):
+        """获取移动目标位置的r坐标"""
+        if move == Move.END_TURN:
+            return 0
+        dst = move.moved_position()
+        return dst.r
+
     def _evaluate_move(self, move, has_jump, num_legal_moves):
         """
         评估单个移动的得分
-        基于移动方向和类型来评分
+        基于移动方向、类型和目标位置来评分
         """
         if move == Move.END_TURN:
-            # END_TURN: 如果有跳跃且有其他选择，大惩罚；否则小惩罚
             if has_jump and num_legal_moves > 1:
-                return -100
-            return -5
+                return -200  # 强烈惩罚提前结束跳跃链
+            return -3
         
         score = 0.0
         
-        # 方向评估 - 核心启发式
-        # 目标在下方（正r方向），所以鼓励向下移动
-        if move.direction == Direction.DownLeft:
-            score += 20
-        elif move.direction == Direction.DownRight:
-            score += 20
-        elif move.direction == Direction.Left:
-            score += 5
-        elif move.direction == Direction.Right:
-            score += 5
-        elif move.direction == Direction.UpLeft:
-            score -= 15
-        elif move.direction == Direction.UpRight:
-            score -= 15
+        # 1. 目标位置r坐标奖励（核心：越往下越好）
+        dst_r = self._get_move_destination_r(move)
+        score += dst_r * 15  # r坐标越大（越靠近目标），分数越高
         
-        # 跳跃奖励 - 跳跃走得更远，是好事
+        # 2. 方向评估
+        direction_scores = {
+            Direction.DownLeft: 30,
+            Direction.DownRight: 30,
+            Direction.Left: 8,
+            Direction.Right: 8,
+            Direction.UpLeft: -25,
+            Direction.UpRight: -25,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        # 3. 跳跃奖励 - 跳跃走得更远
         if move.is_jump:
-            score += 25
-            # 向下跳跃额外奖励
+            score += 40  # 基础跳跃奖励
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 15
+                score += 25  # 向下跳跃额外奖励
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 10  # 水平跳跃也不错
         
         return score
 
     def _minimax(self, legal_indices, obs, depth, alpha, beta, is_maximizing):
         """
-        简化的Minimax搜索（单步前瞻 + Alpha-Beta剪枝框架）
-        由于无法完整模拟对手行动，采用启发式评估
+        Minimax搜索 + Alpha-Beta剪枝
         """
         has_jump = self._has_jump_in_progress(obs)
         num_legal = len(legal_indices)
@@ -341,7 +347,7 @@ class MinimaxPolicy(Policy):
 class EnhancedMinimaxPolicy(Policy):
     """
     增强版Minimax策略
-    使用更精细的评估函数和多因素决策
+    使用更精细的评估函数和多因素决策，专门针对RL Baseline优化
     """
     def __init__(self, triangle_size=4, config={}, max_depth=2):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -359,46 +365,62 @@ class EnhancedMinimaxPolicy(Policy):
         observation = obs["observation"].reshape(board_size, board_size, 4)
         return np.any(observation[:, :, 2] == 1)
 
+    def _get_move_info(self, move):
+        """获取移动的源和目标位置信息"""
+        if move == Move.END_TURN:
+            return None, None
+        src = move.position
+        dst = move.moved_position()
+        return (src.q, src.r), (dst.q, dst.r)
+
     def _evaluate_move(self, move, has_jump, num_legal_moves):
         """
         增强的移动评估函数
-        考虑多种因素
+        考虑位置、方向、跳跃等多种因素
         """
         if move == Move.END_TURN:
             if has_jump and num_legal_moves > 1:
-                return -200  # 强烈惩罚提前结束跳跃链
-            return -2
+                return -300  # 强烈惩罚提前结束跳跃链
+            return -1
         
         score = 0.0
+        src, dst = self._get_move_info(move)
         
-        # 方向评估 - 增强版
+        # 1. 目标位置r坐标奖励（最重要：越往下越好）
+        if dst:
+            score += dst[1] * 20  # r坐标越大越好
+        
+        # 2. 进步奖励（目标r - 源r）
+        if src and dst:
+            progress = dst[1] - src[1]
+            score += progress * 25
+        
+        # 3. 方向评估
         direction_scores = {
-            Direction.DownLeft: 30,
-            Direction.DownRight: 30,
-            Direction.Left: 5,
-            Direction.Right: 5,
-            Direction.UpLeft: -25,
-            Direction.UpRight: -25,
+            Direction.DownLeft: 35,
+            Direction.DownRight: 35,
+            Direction.Left: 10,
+            Direction.Right: 10,
+            Direction.UpLeft: -30,
+            Direction.UpRight: -30,
         }
         score += direction_scores.get(move.direction, 0)
         
-        # 跳跃评估 - 跳跃是关键策略
+        # 4. 跳跃评估 - 跳跃是关键策略
         if move.is_jump:
-            score += 40  # 基础跳跃奖励
+            score += 50  # 基础跳跃奖励（增强）
             
-            # 向下跳跃的额外奖励
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 30  # 向目标方向跳跃
+                score += 40  # 向目标方向跳跃（增强）
             elif move.direction in [Direction.Left, Direction.Right]:
-                score += 10  # 水平跳跃也不错
-            # 向上跳跃仍然有基础跳跃奖励，但方向惩罚会减分
+                score += 15  # 水平跳跃
         
         return score
 
     def _search_best_move(self, legal_indices, obs):
         """
         搜索最佳移动
-        使用带剪枝的贪心搜索
+        使用带剪枝的贪心搜索 + 多步跳跃链优化
         """
         has_jump = self._has_jump_in_progress(obs)
         num_legal = len(legal_indices)
@@ -416,15 +438,13 @@ class EnhancedMinimaxPolicy(Policy):
         # 按分数排序（降序）
         scored_moves.sort(key=lambda x: x[0], reverse=True)
         
-        # Alpha-Beta思想：只考虑前几个最佳候选
-        # 如果最高分比次高分高很多，直接选择
+        # Alpha-Beta剪枝思想：如果最优解显著优于次优解，直接选择
         if len(scored_moves) >= 2:
             best_score = scored_moves[0][0]
             second_score = scored_moves[1][0]
-            if best_score - second_score > 20:
+            if best_score - second_score > 30:
                 return scored_moves[0][1]
         
-        # 否则选择最高分
         return scored_moves[0][1]
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
