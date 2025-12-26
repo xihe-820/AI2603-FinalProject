@@ -380,12 +380,20 @@ class EnhancedMinimaxPolicy(Policy):
         
         # 跳跃评估 - 跳跃是最关键的策略
         if move.is_jump:
-            score += 55  # 基础跳跃奖励
+            # 如果正在跳跃链中，继续跳跃有额外奖励
+            if has_jump:
+                score += 70  # 跳跃链延续奖励
+            else:
+                score += 55  # 开始新跳跃
             
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 40  # 向目标方向跳跃
+                score += 45  # 向目标方向跳跃
             elif move.direction in [Direction.Left, Direction.Right]:
                 score += 20  # 水平跳跃
+            elif move.direction in [Direction.UpLeft, Direction.UpRight]:
+                # 在跳跃链中，向上跳可能是为了更长的链
+                if has_jump:
+                    score += 5
         
         return score
 
