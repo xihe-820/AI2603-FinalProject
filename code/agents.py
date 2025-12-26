@@ -355,64 +355,47 @@ class EnhancedMinimaxPolicy(Policy):
         observation = obs["observation"].reshape(board_size, board_size, 4)
         return np.any(observation[:, :, 2] == 1)
 
-    def _count_jump_options(self, obs):
-        """统计当前可用的跳跃动作数量"""
-        action_mask = obs["action_mask"]
-        jump_count = 0
-        for action_idx in range(len(action_mask)):
-            if action_mask[action_idx] == 1:
-                move = action_to_move(action_idx, self.n)
-                if move != Move.END_TURN and move.is_jump:
-                    jump_count += 1
-        return jump_count
-
-    def _evaluate_move(self, move, has_jump, num_legal_moves, jump_options=0):
+    def _evaluate_move(self, move, has_jump, num_legal_moves):
         """
         增强的移动评估函数
         考虑多种因素，更激进的跳跃策略
         """
         if move == Move.END_TURN:
-            # 如果有跳跃选项，强烈惩罚结束
-            if has_jump and jump_options > 0:
-                return -500  # 极大惩罚：有跳跃机会却选择结束
             if has_jump and num_legal_moves > 1:
-                return -300
-            return -1
+                return -200
+            return -2
         
         score = 0.0
         
-        # 方向评估 - 更激进
+        # 方向评估
         direction_scores = {
-            Direction.DownLeft: 40,
-            Direction.DownRight: 40,
-            Direction.Left: 10,
-            Direction.Right: 10,
-            Direction.UpLeft: -35,
-            Direction.UpRight: -35,
+            Direction.DownLeft: 35,
+            Direction.DownRight: 35,
+            Direction.Left: 8,
+            Direction.Right: 8,
+            Direction.UpLeft: -30,
+            Direction.UpRight: -30,
         }
         score += direction_scores.get(move.direction, 0)
         
         # 跳跃评估 - 跳跃是最关键的策略
         if move.is_jump:
-            score += 80  # 大幅提高基础跳跃奖励
+            score += 55  # 基础跳跃奖励
             
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 60  # 向目标方向跳跃（大幅提高）
+                score += 40  # 向目标方向跳跃
             elif move.direction in [Direction.Left, Direction.Right]:
-                score += 25  # 水平跳跃
-            elif move.direction in [Direction.UpLeft, Direction.UpRight]:
-                score += 10  # 即使向上跳跃，也比普通移动好（可能是跳跃链的一部分）
+                score += 20  # 水平跳跃
         
         return score
 
     def _search_best_move(self, legal_indices, obs):
         """
         搜索最佳移动
-        使用带剪枝的贪心搜索，优先跳跃链
+        使用带剪枝的贪心搜索
         """
         has_jump = self._has_jump_in_progress(obs)
         num_legal = len(legal_indices)
-        jump_options = self._count_jump_options(obs)
         
         if num_legal == 0:
             return self.action_space_dim - 1
@@ -421,7 +404,7 @@ class EnhancedMinimaxPolicy(Policy):
         scored_moves = []
         for action_idx in legal_indices:
             move = action_to_move(action_idx, self.n)
-            score = self._evaluate_move(move, has_jump, num_legal, jump_options)
+            score = self._evaluate_move(move, has_jump, num_legal)
             scored_moves.append((score, action_idx, move))
         
         # 按分数排序（降序）
@@ -431,7 +414,7 @@ class EnhancedMinimaxPolicy(Policy):
         if len(scored_moves) >= 2:
             best_score = scored_moves[0][0]
             second_score = scored_moves[1][0]
-            if best_score - second_score > 30:
+            if best_score - second_score > 20:
                 return scored_moves[0][1]
         
         return scored_moves[0][1]
