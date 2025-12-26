@@ -41,7 +41,7 @@ def create_config(env_name: str, triangle_size: int = 4, entropy_coeff: float = 
     # 神经网络配置：
     model_config = {
         # "fcnet_hiddens": [64, 64]
-        "fcnet_hiddens": [256, 128]
+        "fcnet_hiddens": [256, 256, 128]  # 更深的网络
     }
 
     # 定义RL模块规格
@@ -53,7 +53,7 @@ def create_config(env_name: str, triangle_size: int = 4, entropy_coeff: float = 
     # 计算动作空间维度：(4n+1)^2 × 6方向 × 2移动类型 + 1结束回合
     action_space_dim = (4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1
     # 观察空间形状：(4n+1)^2 × 4个通道，扁平化
-    observation_space_shape = ((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,)
+    observation_space_dim = (4 * triangle_size + 1) * (4 * triangle_size + 1) * 4
 
     # 主要配置：配置ActionMaskEnv和ActionMaskModel
     config = (
@@ -65,24 +65,24 @@ def create_config(env_name: str, triangle_size: int = 4, entropy_coeff: float = 
             env_config={
                 "triangle_size": triangle_size,  # 三角区域大小
                 "action_space": Discrete(action_space_dim),  # 动作空间
-                "max_iters": 100,  # 最大迭代次数
+                "max_iters": 200,  # 增加最大迭代次数，让游戏有更多机会结束
                 "render_mode": None,  # 渲染模式（训练时不渲染）
                 # 环境配置的观察空间，实际环境会创建包含"observation"和"action_mask"的字典
-                "observation_space": Box(low=0, high=1, shape=(observation_space_shape), dtype=np.int8),
+                "observation_space": Box(low=0, high=1, shape=(observation_space_dim,), dtype=np.int8),
             },
         )
         .training(
-            # 训练参数配置
-            train_batch_size=512,
-            lr=5e-5,
-            gamma=0.99,
+            # 训练参数配置 - 优化后的参数
+            train_batch_size=2048,  # 增大批量
+            lr=3e-4,  # 提高学习率
+            gamma=0.995,  # 提高折扣因子，重视长期奖励
             lambda_=0.95,
             use_gae=True,
             clip_param=0.2,
             grad_clip=0.5,
             vf_loss_coeff=0.5,
-            sgd_minibatch_size=64,
-            num_sgd_iter=10,
+            sgd_minibatch_size=256,  # 增大minibatch
+            num_sgd_iter=15,  # 增加SGD迭代次数
             entropy_coeff=entropy_coeff,
             _enable_learner_api=True
         )
