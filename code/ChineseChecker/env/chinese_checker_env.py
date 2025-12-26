@@ -120,6 +120,38 @@ class raw_env(AECEnv):
         self.agent_selection = self._agent_selector.next()  # 选择第一个玩家
         return self.observe(self.agent_selection)
 
+    def _calculate_progress(self, player):
+        """
+        计算玩家的进度分数
+        基于棋子到目标区域的距离
+        
+        Args:
+            player: 玩家编号
+            
+        Returns:
+            float: 进度分数（越高越好）
+        """
+        progress = 0.0
+        target_coords = list(self.game.get_target_coordinates(player))
+        
+        # 获取玩家的棋子位置
+        board = self.game.get_axial_board(player)
+        for q in range(-2 * self.n, 2 * self.n + 1):
+            for r in range(-2 * self.n, 2 * self.n + 1):
+                q_idx = q + 2 * self.n
+                r_idx = r + 2 * self.n
+                if 0 <= q_idx < board.shape[0] and 0 <= r_idx < board.shape[1]:
+                    if board[q_idx, r_idx] == 0:  # 当前玩家的棋子（旋转后为0）
+                        # 检查是否在目标区域
+                        in_target = any(t[0] == q and t[1] == r for t in target_coords)
+                        if in_target:
+                            progress += 10.0  # 在目标区域内
+                        else:
+                            # 计算到目标区域的r坐标进度（目标在下方，r越大越好）
+                            progress += r * 0.5
+        
+        return progress
+
     def step(self, action):
         """
         执行一步动作
@@ -138,37 +170,51 @@ class raw_env(AECEnv):
 
         # 将动作索引转换为Move对象
         move = action_to_move(action, self.n)
+        
+        # 记录移动前的状态用于计算奖励
+        old_progress = self._calculate_progress(player)
+        
         # 执行移动
         move = self.game.move(player, move)
+        
+        # 计算移动后的进度
+        new_progress = self._calculate_progress(player)
 
         # 奖励分配逻辑
         if self.game.did_player_win(self.agent_name_mapping[agent]):
-            # 玩家获胜
+            # 玩家获胜 - 大奖励
             self.terminations = {
                 agent: self.game.is_game_over() for agent in self.agents
             }
             for a in self.agents:
-                self.rewards[a] = 10 if a == agent else -1  # 获胜者奖励10，其他-1
+                self.rewards[a] = 100 if a == agent else -10  # 增大胜负奖励差距
             self.winner = agent
         elif move is None:
             # 非法移动
             self.rewards[agent] = -1000
-        else:            
-            # 方向相关的小奖励/惩罚
-            if isinstance(move, Move) and move.direction in [Direction.DownLeft, Direction.DownRight]:
-                self.rewards[agent] = 0.001  # 向下移动有轻微正向奖励
-            if isinstance(move, Move) and move.direction in [Direction.UpLeft, Direction.UpRight]:
-                self.rewards[agent] = -0.001  # 向上移动有轻微负向奖励
+        else:
+            # 基于进度变化的奖励（核心改进）
+            progress_reward = (new_progress - old_progress) * 2.0  # 进度奖励
+            self.rewards[agent] = progress_reward
             
-            # 目标区域进出奖励
+            # 方向相关的奖励/惩罚（增强）
+            if isinstance(move, Move) and move != Move.END_TURN:
+                if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                    self.rewards[agent] += 0.1  # 向下移动奖励
+                    if move.is_jump:
+                        self.rewards[agent] += 0.2  # 向下跳跃额外奖励
+                elif move.direction in [Direction.UpLeft, Direction.UpRight]:
+                    self.rewards[agent] -= 0.15  # 向上移动惩罚
+            
+            # 目标区域进出奖励（增强）
             if move and move != Move.END_TURN:
                 src_pos = move.position
                 dst_pos = move.moved_position()
                 target = [Position(q, r) for q, r, s in self.game.get_target_coordinates(player)]
                 if src_pos not in target and dst_pos in target:
-                    self.rewards[agent] += 0.1  # 进入目标区域
+                    self.rewards[agent] += 1.0  # 进入目标区域（增大10倍）
                 if src_pos in target and dst_pos not in target:
-                    self.rewards[agent] -= 0.1  # 离开目标区域
+                    self.rewards[agent] -= 1.5  # 离开目标区域（惩罚更重）
 
         self._accumulate_rewards()  # 累积奖励
         self._clear_rewards()       # 清除当前奖励
