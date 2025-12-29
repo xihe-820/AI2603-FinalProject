@@ -333,22 +333,220 @@ class MinimaxPolicy(Policy):
         )[0]
 
 
-# 增强版Minimax - 更复杂的多层搜索
-class EnhancedMinimaxPolicy(Policy):
+# =============================================================================
+# 新算法: Monte Carlo Tree Search (MCTS) 蒙特卡洛树搜索
+# =============================================================================
+import random
+import math
+
+class MCTSNode:
+    """MCTS树节点"""
+    def __init__(self, action=None, parent=None):
+        self.action = action  # 到达此节点的动作
+        self.parent = parent
+        self.children = {}  # action -> MCTSNode
+        self.visits = 0
+        self.value = 0.0
+    
+    def ucb1(self, exploration=1.414):
+        """UCB1值：平衡探索与利用"""
+        if self.visits == 0:
+            return float('inf')
+        return self.value / self.visits + exploration * math.sqrt(math.log(self.parent.visits) / self.visits)
+    
+    def best_child(self, exploration=1.414):
+        """选择UCB1最高的子节点"""
+        return max(self.children.values(), key=lambda c: c.ucb1(exploration))
+    
+    def most_visited_child(self):
+        """返回访问次数最多的子节点"""
+        return max(self.children.values(), key=lambda c: c.visits)
+
+
+class MCTSPolicy(Policy):
     """
-    增强版Minimax策略
-    使用更精细的评估函数和多因素决策
+    蒙特卡洛树搜索策略
+    通过随机模拟来评估每个走法的价值
     """
-    def __init__(self, triangle_size=4, config={}, max_depth=2):
+    def __init__(self, triangle_size=4, config={}, num_simulations=100, exploration=1.414):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
         action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
         super().__init__(observation_space, action_space, config)
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
         self.n = triangle_size
-        self.max_depth = max_depth
+        self.num_simulations = num_simulations
+        self.exploration = exploration
+
+    def _has_jump_in_progress(self, obs):
+        """检查是否有跳跃正在进行中"""
+        n = self.n
+        board_size = 4 * n + 1
+        observation = obs["observation"].reshape(board_size, board_size, 4)
+        return np.any(observation[:, :, 2] == 1)
+
+    def _evaluate_move_heuristic(self, move, has_jump):
+        """
+        启发式评估单个移动
+        用于模拟阶段的快速决策
+        """
+        if move == Move.END_TURN:
+            return -10
         
-        # 预计算目标区域（相对坐标，目标在下方）
+        score = 0.0
+        
+        # 方向评估
+        direction_scores = {
+            Direction.DownLeft: 30,
+            Direction.DownRight: 30,
+            Direction.Left: 5,
+            Direction.Right: 5,
+            Direction.UpLeft: -25,
+            Direction.UpRight: -25,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        # 跳跃奖励
+        if move.is_jump:
+            if has_jump:
+                score += 60  # 跳跃链延续
+            else:
+                score += 40  # 新跳跃
+            
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 35
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 15
+        
+        return score
+
+    def _simulate_rollout(self, legal_indices, obs, depth=10):
+        """
+        执行一次rollout模拟
+        返回模拟得到的价值估计
+        """
+        total_score = 0.0
+        has_jump = self._has_jump_in_progress(obs)
+        
+        # 模拟：使用启发式快速选择动作
+        for d in range(depth):
+            if len(legal_indices) == 0:
+                break
+            
+            # 根据启发式评分选择动作（带随机性）
+            scored_moves = []
+            for action_idx in legal_indices:
+                move = action_to_move(action_idx, self.n)
+                score = self._evaluate_move_heuristic(move, has_jump)
+                scored_moves.append((score, action_idx, move))
+            
+            # 使用softmax选择（温度参数控制随机性）
+            scores = np.array([s[0] for s in scored_moves])
+            scores = scores - np.max(scores)  # 数值稳定性
+            exp_scores = np.exp(scores / 10.0)  # 温度=10
+            probs = exp_scores / np.sum(exp_scores)
+            
+            chosen_idx = np.random.choice(len(scored_moves), p=probs)
+            chosen_score, chosen_action, chosen_move = scored_moves[chosen_idx]
+            
+            total_score += chosen_score * (0.9 ** d)  # 折扣因子
+            
+            # 简化：只模拟一步
+            break
+        
+        return total_score
+
+    def _mcts_search(self, legal_indices, obs):
+        """
+        执行MCTS搜索
+        """
+        if len(legal_indices) == 0:
+            return self.action_space_dim - 1
+        
+        if len(legal_indices) == 1:
+            return legal_indices[0]
+        
+        has_jump = self._has_jump_in_progress(obs)
+        num_legal = len(legal_indices)
+        
+        # 创建根节点
+        root = MCTSNode()
+        root.visits = 1
+        
+        # 初始化子节点
+        for action_idx in legal_indices:
+            root.children[action_idx] = MCTSNode(action=action_idx, parent=root)
+        
+        # MCTS迭代
+        for _ in range(self.num_simulations):
+            # Selection: 选择要探索的子节点
+            node = root.best_child(self.exploration)
+            
+            # Simulation: 执行rollout
+            value = self._simulate_rollout(legal_indices, obs)
+            
+            # 额外的启发式奖励
+            move = action_to_move(node.action, self.n)
+            heuristic_bonus = self._evaluate_move_heuristic(move, has_jump)
+            value += heuristic_bonus
+            
+            # Backpropagation: 更新节点统计
+            node.visits += 1
+            node.value += value
+        
+        # 选择访问次数最多的动作
+        best_node = root.most_visited_child()
+        return best_node.action
+
+    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
+                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
+        actions = []
+        
+        for obs in obs_batch:
+            action_mask = obs["action_mask"]
+            legal_indices = np.where(action_mask == 1)[0]
+            
+            if len(legal_indices) == 0:
+                actions.append(self.action_space_dim - 1)
+                continue
+            
+            best_action = self._mcts_search(legal_indices, obs)
+            actions.append(best_action)
+        
+        return actions, [], {}
+
+    def compute_single_action(self, obs, state=None, prev_action=None,
+                              prev_reward=None, info=None, episode=None, **kwargs):
+        return self.compute_actions(
+            [obs],
+            state_batches=[state],
+            prev_action_batch=[prev_action],
+            prev_reward_batch=[prev_reward],
+            info_batch=[info],
+            episodes=[episode],
+            **kwargs
+        )[0]
+
+
+# =============================================================================
+# 新算法: Adaptive Strategy Policy - 自适应策略
+# 根据游戏阶段自动调整策略
+# =============================================================================
+class AdaptiveStrategyPolicy(Policy):
+    """
+    自适应策略
+    根据游戏阶段（开局、中局、残局）使用不同的策略
+    """
+    def __init__(self, triangle_size=4, config={}, aggression=1.0):
+        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
+        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
+        super().__init__(observation_space, action_space, config)
+        self.triangle_size = triangle_size
+        self.action_space_dim = action_space.n
+        self.n = triangle_size
+        self.aggression = aggression  # 进攻性参数
+        
+        # 预计算目标区域
         n = triangle_size
         self.target_positions = set()
         for i in range(n):
@@ -356,6 +554,14 @@ class EnhancedMinimaxPolicy(Policy):
                 q = -n + j
                 r = n + 1 + i
                 self.target_positions.add((q, r))
+        
+        # 起始区域
+        self.start_positions = set()
+        for i in range(n):
+            for j in range(0, n - i):
+                q = n - j
+                r = -n - 1 - i
+                self.start_positions.add((q, r))
 
     def _has_jump_in_progress(self, obs):
         """检查是否有跳跃正在进行中"""
@@ -365,7 +571,7 @@ class EnhancedMinimaxPolicy(Policy):
         return np.any(observation[:, :, 2] == 1)
     
     def _parse_board(self, obs):
-        """解析棋盘状态，返回我方和对方棋子位置"""
+        """解析棋盘状态"""
         n = self.n
         board_size = 4 * n + 1
         observation = obs["observation"].reshape(board_size, board_size, 4)
@@ -384,110 +590,127 @@ class EnhancedMinimaxPolicy(Policy):
         
         return my_pieces, opp_pieces
 
-    def _evaluate_position(self, my_pieces, opp_pieces):
+    def _get_game_phase(self, my_pieces, opp_pieces):
         """
-        评估当前局面
-        考虑：棋子到目标的距离、已到达目标的棋子数、对手进度
+        判断游戏阶段
+        返回: 'opening', 'midgame', 'endgame'
         """
-        score = 0.0
         n = self.n
         total_pieces = n * (n + 1) // 2
         
-        my_in_target = 0
-        my_total_progress = 0
+        # 计算我方进度
+        my_in_target = sum(1 for p in my_pieces if p in self.target_positions)
+        my_left_start = sum(1 for p in my_pieces if p in self.start_positions)
         
-        for (q, r) in my_pieces:
-            if (q, r) in self.target_positions:
-                my_in_target += 1
-                score += 500  # 到达目标的大奖励
+        # 计算平均r坐标（进度指标）
+        avg_r = sum(p[1] for p in my_pieces) / len(my_pieces) if my_pieces else 0
+        
+        if my_left_start >= total_pieces * 0.5:
+            return 'opening'
+        elif my_in_target >= total_pieces * 0.5:
+            return 'endgame'
+        else:
+            return 'midgame'
+
+    def _evaluate_move_opening(self, move, has_jump, num_legal):
+        """开局策略：快速展开，重视跳跃链"""
+        if move == Move.END_TURN:
+            if has_jump and num_legal > 1:
+                return -300
+            return -5
+        
+        score = 0.0
+        
+        # 开局重视快速前进
+        direction_scores = {
+            Direction.DownLeft: 40,
+            Direction.DownRight: 40,
+            Direction.Left: 10,
+            Direction.Right: 10,
+            Direction.UpLeft: -40,
+            Direction.UpRight: -40,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        # 开局非常重视跳跃
+        if move.is_jump:
+            if has_jump:
+                score += 80
             else:
-                # r 坐标越大越接近目标（目标在下方）
-                my_total_progress += r
-                score += r * 15  # 进度奖励
-                
-                # 距离目标区域的惩罚
-                min_dist = float('inf')
-                for (tq, tr) in self.target_positions:
-                    dist = abs(q - tq) + abs(r - tr)
-                    min_dist = min(min_dist, dist)
-                score -= min_dist * 3
+                score += 60
+            
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 50
         
-        # 胜利检查
-        if my_in_target == total_pieces:
-            return 100000
+        return score * self.aggression
+
+    def _evaluate_move_midgame(self, move, has_jump, num_legal):
+        """中局策略：平衡前进和跳跃机会"""
+        if move == Move.END_TURN:
+            if has_jump and num_legal > 1:
+                return -250
+            return -3
         
-        # 对手进度惩罚（对手目标在上方，r坐标小的对手棋子更危险）
-        opp_progress = 0
-        for (q, r) in opp_pieces:
-            opp_progress -= r  # 对手r越小越接近他的目标
-        score -= opp_progress * 5
+        score = 0.0
+        
+        direction_scores = {
+            Direction.DownLeft: 35,
+            Direction.DownRight: 35,
+            Direction.Left: 8,
+            Direction.Right: 8,
+            Direction.UpLeft: -30,
+            Direction.UpRight: -30,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        if move.is_jump:
+            if has_jump:
+                score += 70
+            else:
+                score += 55
+            
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 40
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 15
+            elif has_jump:
+                score += 5
         
         return score
 
-    def _simulate_move(self, my_pieces, move):
-        """模拟一步移动后的棋子位置"""
+    def _evaluate_move_endgame(self, move, has_jump, num_legal):
+        """残局策略：精确进入目标区域"""
         if move == Move.END_TURN:
-            return my_pieces
-        
-        new_pieces = list(my_pieces)
-        src = (move.position.q, move.position.r)
-        dst_pos = move.moved_position()
-        dst = (dst_pos.q, dst_pos.r)
-        
-        if src in new_pieces:
-            new_pieces.remove(src)
-            new_pieces.append(dst)
-        
-        return new_pieces
-
-    def _evaluate_move(self, move, has_jump, num_legal_moves, my_pieces, opp_pieces):
-        """
-        综合评估移动：结合位置评估和移动特性
-        """
-        if move == Move.END_TURN:
-            if has_jump and num_legal_moves > 1:
+            if has_jump and num_legal > 1:
                 return -200
             return -2
         
-        # 模拟移动后的局面
-        new_pieces = self._simulate_move(my_pieces, move)
-        position_score = self._evaluate_position(new_pieces, opp_pieces)
+        score = 0.0
         
-        # 移动特性加成
-        move_bonus = 0.0
-        
-        # 方向评估
+        # 残局更重视精确方向
         direction_scores = {
-            Direction.DownLeft: 25,
-            Direction.DownRight: 25,
+            Direction.DownLeft: 45,
+            Direction.DownRight: 45,
             Direction.Left: 5,
             Direction.Right: 5,
-            Direction.UpLeft: -20,
-            Direction.UpRight: -20,
+            Direction.UpLeft: -50,
+            Direction.UpRight: -50,
         }
-        move_bonus += direction_scores.get(move.direction, 0)
+        score += direction_scores.get(move.direction, 0)
         
-        # 跳跃奖励
         if move.is_jump:
             if has_jump:
-                move_bonus += 60  # 跳跃链延续
+                score += 65
             else:
-                move_bonus += 45  # 新跳跃
+                score += 50
             
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                move_bonus += 35
-            elif move.direction in [Direction.Left, Direction.Right]:
-                move_bonus += 15
-            elif has_jump:
-                move_bonus += 5  # 跳跃链中向上跳
+                score += 45
         
-        return position_score + move_bonus
+        return score
 
     def _search_best_move(self, legal_indices, obs):
-        """
-        搜索最佳移动
-        结合位置评估和移动评估
-        """
+        """根据游戏阶段选择最佳移动"""
         has_jump = self._has_jump_in_progress(obs)
         num_legal = len(legal_indices)
         my_pieces, opp_pieces = self._parse_board(obs)
@@ -495,16 +718,25 @@ class EnhancedMinimaxPolicy(Policy):
         if num_legal == 0:
             return self.action_space_dim - 1
         
+        # 判断游戏阶段
+        phase = self._get_game_phase(my_pieces, opp_pieces)
+        
+        # 根据阶段选择评估函数
+        if phase == 'opening':
+            evaluate_fn = self._evaluate_move_opening
+        elif phase == 'endgame':
+            evaluate_fn = self._evaluate_move_endgame
+        else:
+            evaluate_fn = self._evaluate_move_midgame
+        
         # 评估所有合法移动
         scored_moves = []
         for action_idx in legal_indices:
             move = action_to_move(action_idx, self.n)
-            score = self._evaluate_move(move, has_jump, num_legal, my_pieces, opp_pieces)
-            scored_moves.append((score, action_idx, move))
+            score = evaluate_fn(move, has_jump, num_legal)
+            scored_moves.append((score, action_idx))
         
-        # 按分数排序（降序）
         scored_moves.sort(key=lambda x: x[0], reverse=True)
-        
         return scored_moves[0][1]
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,

@@ -1,6 +1,6 @@
 """
 交互式测试脚本
-可以选择测试不同的算法：MinimaxPolicy, EnhancedMinimaxPolicy, 或自定义RL模型
+可以选择测试不同的算法：MinimaxPolicy, MCTSPolicy, AdaptiveStrategyPolicy, 或自定义RL模型
 """
 import os
 import argparse
@@ -10,7 +10,7 @@ import ray
 from ray.rllib.policy.policy import Policy
 
 from ChineseChecker import chinese_checker_v0
-from agents import GreedyPolicy, MinimaxPolicy, EnhancedMinimaxPolicy
+from agents import GreedyPolicy, MinimaxPolicy, MCTSPolicy, AdaptiveStrategyPolicy
 
 
 def load_policy(checkpoint_path, policy_name='default_policy'):
@@ -72,16 +72,18 @@ def main():
     # 可选算法
     algorithms = {
         '1': ('MinimaxPolicy', MinimaxPolicy(args.triangle_size)),
-        '2': ('EnhancedMinimaxPolicy', EnhancedMinimaxPolicy(args.triangle_size)),
+        '2': ('MCTSPolicy', MCTSPolicy(args.triangle_size, num_simulations=50)),
+        '3': ('AdaptiveStrategyPolicy', AdaptiveStrategyPolicy(args.triangle_size)),
     }
     
     while True:
         print("\n" + "="*50)
         print("选择要测试的算法:")
         print("  1. MinimaxPolicy (Alpha-Beta剪枝)")
-        print("  2. EnhancedMinimaxPolicy (增强启发式)")
-        print("  3. 自定义RL模型 (输入checkpoint路径)")
-        print("  4. 测试所有算法")
+        print("  2. MCTSPolicy (蒙特卡洛树搜索)")
+        print("  3. AdaptiveStrategyPolicy (自适应策略)")
+        print("  4. 自定义RL模型 (输入checkpoint路径)")
+        print("  5. 测试所有算法")
         print("  q. 退出")
         print("="*50)
         
@@ -97,6 +99,8 @@ def main():
         elif choice == '2':
             policies_to_test = [algorithms['2']]
         elif choice == '3':
+            policies_to_test = [algorithms['3']]
+        elif choice == '4':
             checkpoint_path = input("请输入checkpoint路径: ").strip()
             if os.path.exists(checkpoint_path):
                 try:
@@ -108,7 +112,7 @@ def main():
             else:
                 print("路径不存在!")
                 continue
-        elif choice == '4':
+        elif choice == '5':
             policies_to_test = list(algorithms.values())
         else:
             print("无效选项!")
