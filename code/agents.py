@@ -923,12 +923,12 @@ class DeepJumpChainPolicy(Policy):
 
 
 # =============================================================================
-# 终极算法: UltimatePolicy - 超激进策略
+# 终极算法: UltimatePolicy - 基于实际进度的评估
 # =============================================================================
 class UltimatePolicy(Policy):
     """
-    终极策略 - 基于AdaptiveStrategyPolicy的超激进版本
-    极度强化跳跃和向下移动
+    终极策略 - 计算每次移动的实际进度变化
+    结合跳跃链奖励
     """
     def __init__(self, triangle_size=4, config={}):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -945,42 +945,57 @@ class UltimatePolicy(Policy):
         observation = obs["observation"].reshape(board_size, board_size, 4)
         return np.any(observation[:, :, 2] == 1)
 
+    def _get_move_delta(self, move):
+        """计算移动带来的r坐标变化（正=向目标移动）"""
+        if move == Move.END_TURN:
+            return 0
+        
+        src = move.position
+        dst = move.moved_position()
+        delta_r = dst.r - src.r
+        return delta_r
+
     def _evaluate_move(self, move, has_jump, num_legal_moves):
         """
-        超激进的移动评估
+        基于实际进度的移动评估
         """
         if move == Move.END_TURN:
             if has_jump and num_legal_moves > 1:
                 return -1000  # 极强惩罚中断跳跃链
-            return -5
+            return -3
         
         score = 0.0
         
-        # 极端重视向下方向
-        direction_scores = {
-            Direction.DownLeft: 60,
-            Direction.DownRight: 60,
-            Direction.Left: 15,
-            Direction.Right: 15,
-            Direction.UpLeft: -60,
-            Direction.UpRight: -60,
-        }
-        score += direction_scores.get(move.direction, 0)
+        # 计算实际进度变化
+        delta_r = self._get_move_delta(move)
         
-        # 极端重视跳跃
+        # 跳跃有距离优势（跳2格而不是1格）
         if move.is_jump:
+            # 跳跃基础分
             if has_jump:
-                score += 150  # 跳跃链延续 - 超高奖励
+                score += 120  # 跳跃链延续
             else:
-                score += 100  # 开始新跳跃
+                score += 80  # 新跳跃
             
-            # 跳跃方向加成
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 80  # 向下跳跃
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 40  # 横向跳跃
-            elif has_jump:
-                score += 20  # 跳跃链中向上跳
+            # 根据实际进度加分
+            if delta_r > 0:
+                score += delta_r * 50  # 向前跳，每格50分
+            elif delta_r == 0:
+                score += 30  # 横向跳
+            else:
+                # 向后跳 - 在跳跃链中可以接受
+                if has_jump:
+                    score += 10
+                else:
+                    score += delta_r * 20  # 惩罚向后
+        else:
+            # 普通行走
+            if delta_r > 0:
+                score += delta_r * 40  # 向前走
+            elif delta_r == 0:
+                score += 10  # 横向走
+            else:
+                score += delta_r * 30  # 向后走惩罚
         
         return score
 
