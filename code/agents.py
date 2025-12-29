@@ -538,7 +538,7 @@ class AdaptiveStrategyPolicy(Policy):
     根据游戏阶段（开局、中局、残局）使用不同的策略
     更激进的跳跃链利用
     """
-    def __init__(self, triangle_size=4, config={}, aggression=1.2):
+    def __init__(self, triangle_size=4, config={}, aggression=1.0):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
         action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
         super().__init__(observation_space, action_space, config)
@@ -631,51 +631,15 @@ class AdaptiveStrategyPolicy(Policy):
         """开局策略：快速展开，重视跳跃链"""
         if move == Move.END_TURN:
             if has_jump and num_legal > 1:
-                return -500  # 更强的惩罚
+                return -300
             return -5
         
         score = 0.0
         
         # 开局重视快速前进
         direction_scores = {
-            Direction.DownLeft: 50,
-            Direction.DownRight: 50,
-            Direction.Left: 12,
-            Direction.Right: 12,
-            Direction.UpLeft: -50,
-            Direction.UpRight: -50,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
-        # 开局非常重视跳跃
-        if move.is_jump:
-            if has_jump:
-                score += 100  # 跳跃链中继续跳跃
-            else:
-                score += 75   # 开始新跳跃
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 60
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 25
-            elif has_jump:
-                # 跳跃链中允许向上跳以延续链
-                score += 15
-        
-        return score * self.aggression
-
-    def _evaluate_move_midgame(self, move, has_jump, num_legal):
-        """中局策略：平衡前进和跳跃机会"""
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -400
-            return -3
-        
-        score = 0.0
-        
-        direction_scores = {
-            Direction.DownLeft: 45,
-            Direction.DownRight: 45,
+            Direction.DownLeft: 40,
+            Direction.DownRight: 40,
             Direction.Left: 10,
             Direction.Right: 10,
             Direction.UpLeft: -40,
@@ -683,41 +647,7 @@ class AdaptiveStrategyPolicy(Policy):
         }
         score += direction_scores.get(move.direction, 0)
         
-        if move.is_jump:
-            if has_jump:
-                score += 90  # 跳跃链延续
-            else:
-                score += 70  # 新跳跃
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 50
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 20
-            elif has_jump:
-                score += 10
-        
-        return score
-
-    def _evaluate_move_endgame(self, move, has_jump, num_legal):
-        """残局策略：精确进入目标区域"""
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -300
-            return -2
-        
-        score = 0.0
-        
-        # 残局更重视精确方向
-        direction_scores = {
-            Direction.DownLeft: 55,
-            Direction.DownRight: 55,
-            Direction.Left: 8,
-            Direction.Right: 8,
-            Direction.UpLeft: -60,
-            Direction.UpRight: -60,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
+        # 开局非常重视跳跃
         if move.is_jump:
             if has_jump:
                 score += 80
@@ -725,9 +655,74 @@ class AdaptiveStrategyPolicy(Policy):
                 score += 60
             
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 50
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 20
+        
+        return score * self.aggression
+
+    def _evaluate_move_midgame(self, move, has_jump, num_legal):
+        """中局策略：平衡前进和跳跃机会"""
+        if move == Move.END_TURN:
+            if has_jump and num_legal > 1:
+                return -250
+            return -3
+        
+        score = 0.0
+        
+        direction_scores = {
+            Direction.DownLeft: 35,
+            Direction.DownRight: 35,
+            Direction.Left: 8,
+            Direction.Right: 8,
+            Direction.UpLeft: -30,
+            Direction.UpRight: -30,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        if move.is_jump:
+            if has_jump:
+                score += 70
+            else:
                 score += 55
+            
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 40
             elif move.direction in [Direction.Left, Direction.Right]:
                 score += 15
+            elif has_jump:
+                score += 5
+        
+        return score
+
+    def _evaluate_move_endgame(self, move, has_jump, num_legal):
+        """残局策略：精确进入目标区域"""
+        if move == Move.END_TURN:
+            if has_jump and num_legal > 1:
+                return -200
+            return -2
+        
+        score = 0.0
+        
+        # 残局更重视精确方向
+        direction_scores = {
+            Direction.DownLeft: 45,
+            Direction.DownRight: 45,
+            Direction.Left: 5,
+            Direction.Right: 5,
+            Direction.UpLeft: -50,
+            Direction.UpRight: -50,
+        }
+        score += direction_scores.get(move.direction, 0)
+        
+        if move.is_jump:
+            if has_jump:
+                score += 65
+            else:
+                score += 50
+            
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 45
         
         return score
 
@@ -895,6 +890,223 @@ class DeepJumpChainPolicy(Policy):
             scored_moves.append((score, action_idx))
         
         scored_moves.sort(key=lambda x: x[0], reverse=True)
+        return scored_moves[0][1]
+
+    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
+                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
+        actions = []
+        
+        for obs in obs_batch:
+            action_mask = obs["action_mask"]
+            legal_indices = np.where(action_mask == 1)[0]
+            
+            if len(legal_indices) == 0:
+                actions.append(self.action_space_dim - 1)
+                continue
+            
+            best_action = self._search_best_move(legal_indices, obs)
+            actions.append(best_action)
+        
+        return actions, [], {}
+
+    def compute_single_action(self, obs, state=None, prev_action=None,
+                              prev_reward=None, info=None, episode=None, **kwargs):
+        return self.compute_actions(
+            [obs],
+            state_batches=[state],
+            prev_action_batch=[prev_action],
+            prev_reward_batch=[prev_reward],
+            info_batch=[info],
+            episodes=[episode],
+            **kwargs
+        )[0]
+
+
+# =============================================================================
+# 终极算法: UltimatePolicy - 综合所有策略优点
+# =============================================================================
+class UltimatePolicy(Policy):
+    """
+    终极策略 - 结合位置评估、跳跃链追踪、阶段自适应
+    目标：70%+ vs RL Baseline
+    """
+    def __init__(self, triangle_size=4, config={}):
+        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
+        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
+        super().__init__(observation_space, action_space, config)
+        self.triangle_size = triangle_size
+        self.action_space_dim = action_space.n
+        self.n = triangle_size
+        
+        # 预计算目标区域（相对坐标系中目标在下方）
+        n = triangle_size
+        self.target_positions = set()
+        for i in range(n):
+            for j in range(0, n - i):
+                q = -n + j
+                r = n + 1 + i
+                self.target_positions.add((q, r))
+
+    def _has_jump_in_progress(self, obs):
+        """检查是否有跳跃正在进行中"""
+        n = self.n
+        board_size = 4 * n + 1
+        observation = obs["observation"].reshape(board_size, board_size, 4)
+        return np.any(observation[:, :, 2] == 1)
+    
+    def _get_jumping_piece_pos(self, obs):
+        """获取正在跳跃的棋子位置"""
+        n = self.n
+        board_size = 4 * n + 1
+        observation = obs["observation"].reshape(board_size, board_size, 4)
+        for qi in range(board_size):
+            for ri in range(board_size):
+                if observation[qi, ri, 2] == 1:
+                    return (qi - 2*n, ri - 2*n)
+        return None
+    
+    def _parse_board(self, obs):
+        """解析棋盘，返回我方棋子位置列表"""
+        n = self.n
+        board_size = 4 * n + 1
+        observation = obs["observation"].reshape(board_size, board_size, 4)
+        
+        my_pieces = []
+        for qi in range(board_size):
+            for ri in range(board_size):
+                if observation[qi, ri, 0] == 1:
+                    q = qi - 2 * n
+                    r = ri - 2 * n
+                    my_pieces.append((q, r))
+        return my_pieces
+    
+    def _count_in_target(self, my_pieces):
+        """统计已到达目标区域的棋子数"""
+        return sum(1 for p in my_pieces if p in self.target_positions)
+    
+    def _get_piece_progress(self, q, r):
+        """计算单个棋子的进度分数（r越大越接近目标）"""
+        return r
+    
+    def _analyze_legal_moves(self, legal_indices):
+        """分析所有合法移动"""
+        jumps = []
+        walks = []
+        end_turn = None
+        
+        for action_idx in legal_indices:
+            move = action_to_move(action_idx, self.n)
+            if move == Move.END_TURN:
+                end_turn = action_idx
+            elif move.is_jump:
+                jumps.append((action_idx, move))
+            else:
+                walks.append((action_idx, move))
+        
+        return jumps, walks, end_turn
+    
+    def _evaluate_move_destination(self, move):
+        """评估移动目的地"""
+        if move == Move.END_TURN:
+            return 0
+        
+        dst = move.moved_position()
+        dst_q, dst_r = dst.q, dst.r
+        
+        # 目的地在目标区域内大加分
+        if (dst_q, dst_r) in self.target_positions:
+            return 200
+        
+        # r坐标越大越好（越接近目标）
+        return dst_r * 10
+    
+    def _evaluate_jump(self, move, has_jump, num_jumps_available):
+        """专门评估跳跃动作"""
+        score = 0.0
+        
+        # 基础跳跃分
+        if has_jump:
+            score += 120  # 跳跃链延续，非常重要
+        else:
+            score += 90
+        
+        # 方向加分
+        if move.direction in [Direction.DownLeft, Direction.DownRight]:
+            score += 80  # 向目标方向跳
+        elif move.direction in [Direction.Left, Direction.Right]:
+            score += 35  # 横向跳
+        else:  # 向上跳
+            if has_jump:
+                score += 20  # 跳跃链中可以接受
+            else:
+                score -= 30  # 单独向上跳不好
+        
+        # 目的地评估
+        score += self._evaluate_move_destination(move)
+        
+        return score
+    
+    def _evaluate_walk(self, move):
+        """评估普通行走"""
+        score = 0.0
+        
+        # 方向分
+        if move.direction in [Direction.DownLeft, Direction.DownRight]:
+            score += 40
+        elif move.direction in [Direction.Left, Direction.Right]:
+            score += 10
+        else:
+            score -= 50  # 向上走很不好
+        
+        # 目的地评估
+        score += self._evaluate_move_destination(move)
+        
+        return score
+
+    def _search_best_move(self, legal_indices, obs):
+        """智能搜索最佳移动"""
+        has_jump = self._has_jump_in_progress(obs)
+        
+        if len(legal_indices) == 0:
+            return self.action_space_dim - 1
+        
+        if len(legal_indices) == 1:
+            return legal_indices[0]
+        
+        # 分析所有移动
+        jumps, walks, end_turn = self._analyze_legal_moves(legal_indices)
+        
+        scored_moves = []
+        
+        # 评估跳跃
+        for action_idx, move in jumps:
+            score = self._evaluate_jump(move, has_jump, len(jumps))
+            scored_moves.append((score, action_idx, 'jump'))
+        
+        # 评估行走（只在没有跳跃链时考虑）
+        if not has_jump:
+            for action_idx, move in walks:
+                score = self._evaluate_walk(move)
+                scored_moves.append((score, action_idx, 'walk'))
+        
+        # 评估结束回合
+        if end_turn is not None:
+            if has_jump and len(jumps) > 0:
+                # 还有跳跃可以继续，强烈不推荐结束
+                end_score = -500
+            elif has_jump and len(jumps) == 0:
+                # 跳跃链结束，必须end turn
+                end_score = 1000
+            else:
+                end_score = -10
+            scored_moves.append((end_score, end_turn, 'end'))
+        
+        if not scored_moves:
+            return self.action_space_dim - 1
+        
+        # 按分数排序
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        
         return scored_moves[0][1]
 
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
