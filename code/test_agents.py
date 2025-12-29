@@ -10,7 +10,7 @@ import ray
 from ray.rllib.policy.policy import Policy
 
 from ChineseChecker import chinese_checker_v0
-from agents import GreedyPolicy, MinimaxPolicy, MCTSPolicy, AdaptiveStrategyPolicy, DeepJumpChainPolicy, UltimatePolicy
+from agents import GreedyPolicy, MinimaxPolicy, MCTSPolicy, AdaptiveStrategyPolicy, DeepJumpChainPolicy, UltimatePolicy, SuperPolicy
 
 
 def load_policy(checkpoint_path, policy_name='default_policy'):
@@ -76,6 +76,7 @@ def main():
         '3': ('AdaptiveStrategyPolicy', AdaptiveStrategyPolicy(args.triangle_size)),
         '4': ('DeepJumpChainPolicy', DeepJumpChainPolicy(args.triangle_size)),
         '5': ('UltimatePolicy', UltimatePolicy(args.triangle_size)),
+        '6': ('SuperPolicy', SuperPolicy(args.triangle_size)),
     }
     
     while True:
@@ -86,8 +87,9 @@ def main():
         print("  3. AdaptiveStrategyPolicy (自适应策略)")
         print("  4. DeepJumpChainPolicy (深度跳跃链策略)")
         print("  5. UltimatePolicy (终极策略)")
-        print("  6. 自定义RL模型 (输入checkpoint路径)")
-        print("  7. 测试所有算法")
+        print("  6. SuperPolicy (超级策略)")
+        print("  7. 自定义RL模型 (输入checkpoint路径)")
+        print("  8. 测试所有算法")
         print("  q. 退出")
         print("="*50)
         
@@ -109,6 +111,8 @@ def main():
         elif choice == '5':
             policies_to_test = [algorithms['5']]
         elif choice == '6':
+            policies_to_test = [algorithms['6']]
+        elif choice == '7':
             checkpoint_path = input("请输入checkpoint路径: ").strip()
             if os.path.exists(checkpoint_path):
                 try:
@@ -120,7 +124,7 @@ def main():
             else:
                 print("路径不存在!")
                 continue
-        elif choice == '7':
+        elif choice == '8':
             policies_to_test = list(algorithms.values())
         else:
             print("无效选项!")

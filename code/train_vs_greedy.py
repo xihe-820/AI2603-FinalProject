@@ -32,6 +32,14 @@ def create_config(env_name: str, triangle_size: int = 4):
     action_space_dim = (4 * triangle_size + 1) ** 2 * 6 * 2 + 1
     observation_space_dim = (4 * triangle_size + 1) ** 2 * 4
 
+    # 自动检测GPU
+    import torch
+    num_gpus = 1 if torch.cuda.is_available() else 0
+    if num_gpus > 0:
+        print(f"检测到GPU: {torch.cuda.get_device_name(0)}, 将使用GPU训练")
+    else:
+        print("未检测到GPU, 使用CPU训练")
+
     config = (
         PPOConfig()
         .environment(
@@ -61,7 +69,7 @@ def create_config(env_name: str, triangle_size: int = 4):
         )
         .experimental(_disable_preprocessor_api=True)
         .framework("torch")
-        .resources(num_gpus=int(os.environ.get("RLLIB_NUM_GPUS", "0")))
+        .resources(num_gpus=num_gpus)
         .rl_module(rl_module_spec=rlm_spec)
     )
     return config
