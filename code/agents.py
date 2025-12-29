@@ -923,12 +923,11 @@ class DeepJumpChainPolicy(Policy):
 
 
 # =============================================================================
-# 终极算法: UltimatePolicy - 基于实际进度的评估
+# 终极算法: UltimatePolicy - 方向评估+跳跃强化
 # =============================================================================
 class UltimatePolicy(Policy):
     """
-    终极策略 - 计算每次移动的实际进度变化
-    结合跳跃链奖励
+    终极策略 - 使用验证有效的方向评估
     """
     def __init__(self, triangle_size=4, config={}):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -945,57 +944,37 @@ class UltimatePolicy(Policy):
         observation = obs["observation"].reshape(board_size, board_size, 4)
         return np.any(observation[:, :, 2] == 1)
 
-    def _get_move_delta(self, move):
-        """计算移动带来的r坐标变化（正=向目标移动）"""
-        if move == Move.END_TURN:
-            return 0
-        
-        src = move.position
-        dst = move.moved_position()
-        delta_r = dst.r - src.r
-        return delta_r
-
     def _evaluate_move(self, move, has_jump, num_legal_moves):
-        """
-        基于实际进度的移动评估
-        """
+        """方向评估"""
         if move == Move.END_TURN:
             if has_jump and num_legal_moves > 1:
-                return -1000  # 极强惩罚中断跳跃链
-            return -3
+                return -300
+            return -5
         
         score = 0.0
         
-        # 计算实际进度变化
-        delta_r = self._get_move_delta(move)
+        # 方向评估
+        direction_scores = {
+            Direction.DownLeft: 40,
+            Direction.DownRight: 40,
+            Direction.Left: 10,
+            Direction.Right: 10,
+            Direction.UpLeft: -40,
+            Direction.UpRight: -40,
+        }
+        score += direction_scores.get(move.direction, 0)
         
-        # 跳跃有距离优势（跳2格而不是1格）
+        # 跳跃评估
         if move.is_jump:
-            # 跳跃基础分
             if has_jump:
-                score += 120  # 跳跃链延续
+                score += 80
             else:
-                score += 80  # 新跳跃
+                score += 60
             
-            # 根据实际进度加分
-            if delta_r > 0:
-                score += delta_r * 50  # 向前跳，每格50分
-            elif delta_r == 0:
-                score += 30  # 横向跳
-            else:
-                # 向后跳 - 在跳跃链中可以接受
-                if has_jump:
-                    score += 10
-                else:
-                    score += delta_r * 20  # 惩罚向后
-        else:
-            # 普通行走
-            if delta_r > 0:
-                score += delta_r * 40  # 向前走
-            elif delta_r == 0:
-                score += 10  # 横向走
-            else:
-                score += delta_r * 30  # 向后走惩罚
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 50
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 20
         
         return score
 
@@ -1007,7 +986,6 @@ class UltimatePolicy(Policy):
         if num_legal == 0:
             return self.action_space_dim - 1
         
-        # 评估所有合法移动
         scored_moves = []
         for action_idx in legal_indices:
             move = action_to_move(action_idx, self.n)
