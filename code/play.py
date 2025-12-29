@@ -10,7 +10,7 @@ from ray.rllib.policy.policy import Policy
 from ChineseChecker import chinese_checker_v0
 
 # Policies
-from agents import GreedyPolicy, MinimaxPolicy, EnhancedMinimaxPolicy
+from agents import GreedyPolicy, MinimaxPolicy, AdaptiveStrategyPolicy, EnhancedPolicy
 
 
 def load_policy(

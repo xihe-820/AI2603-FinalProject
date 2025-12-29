@@ -28,6 +28,16 @@ from ray.rllib.policy.policy import Policy
 from ChineseChecker.env.game import Direction, Move, Position, ChineseCheckers
 from ChineseChecker.env.utils import action_to_move, move_to_action, get_legal_move_mask
 
+# 方向到坐标增量的映射（全局常量，避免重复定义）
+DIRECTION_DELTAS = {
+    Direction.Right: (1, 0),
+    Direction.UpRight: (1, -1),
+    Direction.UpLeft: (0, -1),
+    Direction.Left: (-1, 0),
+    Direction.DownLeft: (-1, 1),
+    Direction.DownRight: (0, 1),
+}
+
 # Random Policy 
 class ChineseCheckersRandomPolicy(Policy):
     def __init__(self, triangle_size=4, config={}):
@@ -334,201 +344,6 @@ class MinimaxPolicy(Policy):
 
 
 # =============================================================================
-# 新算法: Monte Carlo Tree Search (MCTS) 蒙特卡洛树搜索
-# =============================================================================
-import random
-import math
-
-class MCTSNode:
-    """MCTS树节点"""
-    def __init__(self, action=None, parent=None):
-        self.action = action  # 到达此节点的动作
-        self.parent = parent
-        self.children = {}  # action -> MCTSNode
-        self.visits = 0
-        self.value = 0.0
-    
-    def ucb1(self, exploration=1.414):
-        """UCB1值：平衡探索与利用"""
-        if self.visits == 0:
-            return float('inf')
-        return self.value / self.visits + exploration * math.sqrt(math.log(self.parent.visits) / self.visits)
-    
-    def best_child(self, exploration=1.414):
-        """选择UCB1最高的子节点"""
-        return max(self.children.values(), key=lambda c: c.ucb1(exploration))
-    
-    def most_visited_child(self):
-        """返回访问次数最多的子节点"""
-        return max(self.children.values(), key=lambda c: c.visits)
-
-
-class MCTSPolicy(Policy):
-    """
-    蒙特卡洛树搜索策略
-    通过随机模拟来评估每个走法的价值
-    """
-    def __init__(self, triangle_size=4, config={}, num_simulations=100, exploration=1.414):
-        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
-        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
-        super().__init__(observation_space, action_space, config)
-        self.triangle_size = triangle_size
-        self.action_space_dim = action_space.n
-        self.n = triangle_size
-        self.num_simulations = num_simulations
-        self.exploration = exploration
-
-    def _has_jump_in_progress(self, obs):
-        """检查是否有跳跃正在进行中"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        return np.any(observation[:, :, 2] == 1)
-
-    def _evaluate_move_heuristic(self, move, has_jump):
-        """
-        启发式评估单个移动
-        用于模拟阶段的快速决策
-        """
-        if move == Move.END_TURN:
-            return -10
-        
-        score = 0.0
-        
-        # 方向评估
-        direction_scores = {
-            Direction.DownLeft: 30,
-            Direction.DownRight: 30,
-            Direction.Left: 5,
-            Direction.Right: 5,
-            Direction.UpLeft: -25,
-            Direction.UpRight: -25,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
-        # 跳跃奖励
-        if move.is_jump:
-            if has_jump:
-                score += 60  # 跳跃链延续
-            else:
-                score += 40  # 新跳跃
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 35
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 15
-        
-        return score
-
-    def _simulate_rollout(self, legal_indices, obs, depth=10):
-        """
-        执行一次rollout模拟
-        返回模拟得到的价值估计
-        """
-        total_score = 0.0
-        has_jump = self._has_jump_in_progress(obs)
-        
-        # 模拟：使用启发式快速选择动作
-        for d in range(depth):
-            if len(legal_indices) == 0:
-                break
-            
-            # 根据启发式评分选择动作（带随机性）
-            scored_moves = []
-            for action_idx in legal_indices:
-                move = action_to_move(action_idx, self.n)
-                score = self._evaluate_move_heuristic(move, has_jump)
-                scored_moves.append((score, action_idx, move))
-            
-            # 使用softmax选择（温度参数控制随机性）
-            scores = np.array([s[0] for s in scored_moves])
-            scores = scores - np.max(scores)  # 数值稳定性
-            exp_scores = np.exp(scores / 10.0)  # 温度=10
-            probs = exp_scores / np.sum(exp_scores)
-            
-            chosen_idx = np.random.choice(len(scored_moves), p=probs)
-            chosen_score, chosen_action, chosen_move = scored_moves[chosen_idx]
-            
-            total_score += chosen_score * (0.9 ** d)  # 折扣因子
-            
-            # 简化：只模拟一步
-            break
-        
-        return total_score
-
-    def _mcts_search(self, legal_indices, obs):
-        """
-        执行MCTS搜索
-        """
-        if len(legal_indices) == 0:
-            return self.action_space_dim - 1
-        
-        if len(legal_indices) == 1:
-            return legal_indices[0]
-        
-        has_jump = self._has_jump_in_progress(obs)
-        num_legal = len(legal_indices)
-        
-        # 创建根节点
-        root = MCTSNode()
-        root.visits = 1
-        
-        # 初始化子节点
-        for action_idx in legal_indices:
-            root.children[action_idx] = MCTSNode(action=action_idx, parent=root)
-        
-        # MCTS迭代
-        for _ in range(self.num_simulations):
-            # Selection: 选择要探索的子节点
-            node = root.best_child(self.exploration)
-            
-            # Simulation: 执行rollout
-            value = self._simulate_rollout(legal_indices, obs)
-            
-            # 额外的启发式奖励
-            move = action_to_move(node.action, self.n)
-            heuristic_bonus = self._evaluate_move_heuristic(move, has_jump)
-            value += heuristic_bonus
-            
-            # Backpropagation: 更新节点统计
-            node.visits += 1
-            node.value += value
-        
-        # 选择访问次数最多的动作
-        best_node = root.most_visited_child()
-        return best_node.action
-
-    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
-                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        
-        for obs in obs_batch:
-            action_mask = obs["action_mask"]
-            legal_indices = np.where(action_mask == 1)[0]
-            
-            if len(legal_indices) == 0:
-                actions.append(self.action_space_dim - 1)
-                continue
-            
-            best_action = self._mcts_search(legal_indices, obs)
-            actions.append(best_action)
-        
-        return actions, [], {}
-
-    def compute_single_action(self, obs, state=None, prev_action=None,
-                              prev_reward=None, info=None, episode=None, **kwargs):
-        return self.compute_actions(
-            [obs],
-            state_batches=[state],
-            prev_action_batch=[prev_action],
-            prev_reward_batch=[prev_reward],
-            info_batch=[info],
-            episodes=[episode],
-            **kwargs
-        )[0]
-
-
-# =============================================================================
 # 新算法: Adaptive Strategy Policy - 自适应策略
 # 根据游戏阶段自动调整策略
 # =============================================================================
@@ -786,19 +601,18 @@ class AdaptiveStrategyPolicy(Policy):
         )[0]
 
 
-if __name__ == "__main__":
-    pass
-
-
 # =============================================================================
-# 新算法: Deep Jump Chain Policy - 深度跳跃链策略
-# 使用DFS搜索最优跳跃链
+# 强化算法: EnhancedPolicy - 综合位置与跳跃链评估
 # =============================================================================
-class DeepJumpChainPolicy(Policy):
+class EnhancedPolicy(Policy):
     """
-    深度跳跃链策略
-    使用深度优先搜索找到最优的跳跃链组合
-    特别针对跳跃链进行优化
+    增强策略 - 综合多种因素进行评估
+    
+    核心思想：
+    1. 利用observation中的棋子位置信息
+    2. 评估每个移动对整体进度的贡献
+    3. 特别优化跳跃链的利用
+    4. 考虑棋子的分布（避免棋子堆积）
     """
     def __init__(self, triangle_size=4, config={}):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -807,86 +621,137 @@ class DeepJumpChainPolicy(Policy):
         self.triangle_size = triangle_size
         self.action_space_dim = action_space.n
         self.n = triangle_size
+        self.board_size = 4 * self.n + 1
 
-    def _has_jump_in_progress(self, obs):
-        """检查是否有跳跃正在进行中"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        return np.any(observation[:, :, 2] == 1)
-    
-    def _count_jump_moves(self, legal_indices):
-        """统计跳跃动作数量"""
-        jump_count = 0
-        for action_idx in legal_indices:
-            move = action_to_move(action_idx, self.n)
-            if move != Move.END_TURN and move.is_jump:
-                jump_count += 1
-        return jump_count
+    def _parse_board(self, obs):
+        """解析棋盘状态"""
+        observation = obs["observation"].reshape(self.board_size, self.board_size, 4)
+        
+        my_pieces = []
+        opp_pieces = []
+        has_jump_in_progress = False
+        jump_source = None
+        
+        for q_idx in range(self.board_size):
+            for r_idx in range(self.board_size):
+                q = q_idx - 2 * self.n
+                r = r_idx - 2 * self.n
+                
+                if observation[q_idx, r_idx, 0] == 1:
+                    my_pieces.append((q, r))
+                if observation[q_idx, r_idx, 1] == 1:
+                    opp_pieces.append((q, r))
+                if observation[q_idx, r_idx, 2] == 1:
+                    has_jump_in_progress = True
+                    jump_source = (q, r)
+        
+        return my_pieces, opp_pieces, has_jump_in_progress, jump_source
 
-    def _evaluate_move(self, move, has_jump, num_legal, jump_count):
+    def _get_r_delta(self, direction, is_jump):
+        """获取r坐标变化量"""
+        delta = {
+            Direction.DownLeft: 1,
+            Direction.DownRight: 1,
+            Direction.Left: 0,
+            Direction.Right: 0,
+            Direction.UpLeft: -1,
+            Direction.UpRight: -1,
+        }
+        base = delta.get(direction, 0)
+        return base * 2 if is_jump else base
+
+    def _count_potential_jumps(self, from_q, from_r, all_pieces, direction_taken=None):
         """
-        深度评估移动
-        特别重视跳跃链的延续
+        计算从某个位置可能的跳跃数量
+        用于评估跳跃链的潜力
         """
+        all_occupied = set(all_pieces)
+        potential = 0
+        best_delta_r = -10
+        
+        for direction in Direction:
+            dq, dr = DIRECTION_DELTAS[direction]
+            mid_q, mid_r = from_q + dq, from_r + dr
+            land_q, land_r = from_q + 2*dq, from_r + 2*dr
+            
+            # 检查是否可以跳跃
+            if (mid_q, mid_r) in all_occupied:
+                if (land_q, land_r) not in all_occupied:
+                    # 检查落点在棋盘内
+                    if abs(land_q) <= 2*self.n and abs(land_r) <= 2*self.n:
+                        potential += 1
+                        if dr > best_delta_r:
+                            best_delta_r = dr
+        
+        return potential, best_delta_r
+
+    def _evaluate_move(self, move, my_pieces, opp_pieces, has_jump, jump_count):
+        """综合评估移动"""
         if move == Move.END_TURN:
-            # 如果还有跳跃可以继续，强烈惩罚结束
+            # 如果在跳跃链中且还有跳跃可继续，严重惩罚
             if has_jump and jump_count > 0:
-                return -1000
+                return -5000
             return -1
         
         score = 0.0
+        all_pieces = my_pieces + opp_pieces
         
-        # 方向评估 - 非常重视向下
-        direction_scores = {
-            Direction.DownLeft: 50,
-            Direction.DownRight: 50,
-            Direction.Left: 10,
-            Direction.Right: 10,
-            Direction.UpLeft: -45,
-            Direction.UpRight: -45,
-        }
-        score += direction_scores.get(move.direction, 0)
+        # 1. 基础方向分数
+        r_delta = self._get_r_delta(move.direction, move.is_jump)
+        score += r_delta * 100  # 进度最重要
         
-        # 跳跃是核心策略
+        # 2. 跳跃奖励
         if move.is_jump:
-            # 基础跳跃奖励
-            base_jump_bonus = 100 if has_jump else 80
-            score += base_jump_bonus
+            score += 80  # 基础跳跃奖励
             
-            # 方向加成
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 70  # 向目标跳跃
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 30  # 横向跳跃
-            elif has_jump:
-                # 跳跃链中向上跳可能是为了更长的链
-                score += 15
+            # 计算跳跃后的位置
+            q, r = move.position.q, move.position.r
+            dq, dr = DIRECTION_DELTAS[move.direction]
+            new_q, new_r = q + 2*dq, r + 2*dr
+            
+            # 评估跳跃后的继续潜力
+            # 更新棋子集合
+            updated_pieces = [p for p in all_pieces if p != (q, r)]
+            updated_pieces.append((new_q, new_r))
+            
+            potential, best_dr = self._count_potential_jumps(new_q, new_r, updated_pieces)
+            score += potential * 40  # 每个潜在跳跃加分
+            if best_dr > 0:
+                score += 50  # 如果有向下跳跃的可能
+            
+            # 跳跃链延续奖励
+            if has_jump:
+                score += 60
         else:
-            # 非跳跃：如果有跳跃可用，惩罚普通移动
-            if not has_jump:
-                # 没有跳跃链时，普通向下移动也可以
-                if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                    score += 25
+            # 普通移动
+            if move.direction in [Direction.DownLeft, Direction.DownRight]:
+                score += 40
+            elif move.direction in [Direction.Left, Direction.Right]:
+                score += 10
         
         return score
 
     def _search_best_move(self, legal_indices, obs):
         """搜索最佳移动"""
-        has_jump = self._has_jump_in_progress(obs)
-        num_legal = len(legal_indices)
-        
-        if num_legal == 0:
+        if len(legal_indices) == 0:
             return self.action_space_dim - 1
         
-        # 统计跳跃动作数量
-        jump_count = self._count_jump_moves(legal_indices)
+        if len(legal_indices) == 1:
+            return legal_indices[0]
         
-        # 评估所有合法移动
+        my_pieces, opp_pieces, has_jump, jump_source = self._parse_board(obs)
+        
+        # 统计可用跳跃数
+        jump_count = 0
+        for idx in legal_indices:
+            m = action_to_move(idx, self.n)
+            if m != Move.END_TURN and m.is_jump:
+                jump_count += 1
+        
         scored_moves = []
         for action_idx in legal_indices:
             move = action_to_move(action_idx, self.n)
-            score = self._evaluate_move(move, has_jump, num_legal, jump_count)
+            score = self._evaluate_move(move, my_pieces, opp_pieces, has_jump, jump_count)
             scored_moves.append((score, action_idx))
         
         scored_moves.sort(key=lambda x: x[0], reverse=True)
@@ -922,289 +787,5 @@ class DeepJumpChainPolicy(Policy):
         )[0]
 
 
-# =============================================================================
-# 终极算法: UltimatePolicy - 完整跳跃链搜索
-# =============================================================================
-class UltimatePolicy(Policy):
-    """
-    终极策略 - 搜索当前回合内的最优跳跃链
-    在一个回合内进行深度优先搜索，找到能最大化进度的跳跃序列
-    """
-    def __init__(self, triangle_size=4, config={}):
-        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
-        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
-        super().__init__(observation_space, action_space, config)
-        self.triangle_size = triangle_size
-        self.action_space_dim = action_space.n
-        self.n = triangle_size
-        
-        # 方向到r坐标变化的映射（用于评估进度）
-        # 基于六边形网格，每个方向的r变化
-        self.direction_r_delta = {
-            Direction.DownLeft: 1,   # r增加
-            Direction.DownRight: 1,  # r增加  
-            Direction.Left: 0,       # r不变
-            Direction.Right: 0,      # r不变
-            Direction.UpLeft: -1,    # r减少
-            Direction.UpRight: -1,   # r减少
-        }
-
-    def _has_jump_in_progress(self, obs):
-        """检查是否有跳跃正在进行中"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        return np.any(observation[:, :, 2] == 1)
-
-    def _get_direction_score(self, direction, is_jump):
-        """获取方向分数"""
-        base_scores = {
-            Direction.DownLeft: 40,
-            Direction.DownRight: 40,
-            Direction.Left: 10,
-            Direction.Right: 10,
-            Direction.UpLeft: -40,
-            Direction.UpRight: -40,
-        }
-        score = base_scores.get(direction, 0)
-        
-        if is_jump:
-            score *= 2  # 跳跃距离是行走的两倍
-            score += 30  # 跳跃额外奖励
-        
-        return score
-
-    def _evaluate_single_move(self, move, has_jump_in_progress, available_jumps_count):
-        """评估单个移动"""
-        if move == Move.END_TURN:
-            # 如果还有跳跃可以继续，强烈惩罚结束
-            if has_jump_in_progress and available_jumps_count > 0:
-                return -500
-            return -2
-        
-        return self._get_direction_score(move.direction, move.is_jump)
-
-    def _find_best_jump_chain(self, legal_indices, obs):
-        """
-        在当前状态下找到最优的跳跃链
-        返回第一步应该执行的action
-        """
-        has_jump = self._has_jump_in_progress(obs)
-        
-        # 分析当前可用的移动
-        jumps = []
-        walks = []
-        end_turn_action = None
-        
-        for action_idx in legal_indices:
-            move = action_to_move(action_idx, self.n)
-            if move == Move.END_TURN:
-                end_turn_action = action_idx
-            elif move.is_jump:
-                score = self._get_direction_score(move.direction, True)
-                jumps.append((score, action_idx, move))
-            else:
-                score = self._get_direction_score(move.direction, False)
-                walks.append((score, action_idx, move))
-        
-        # 如果正在跳跃链中
-        if has_jump:
-            if jumps:
-                # 选择分数最高的跳跃继续
-                jumps.sort(key=lambda x: x[0], reverse=True)
-                return jumps[0][1]
-            else:
-                # 没有跳跃可以继续，必须结束
-                return end_turn_action if end_turn_action else legal_indices[0]
-        
-        # 不在跳跃链中
-        # 策略：优先选择高分跳跃，其次高分行走
-        all_moves = []
-        
-        for score, action_idx, move in jumps:
-            # 跳跃有额外的"潜力"分数，因为可以继续跳
-            potential_bonus = 50  # 开始跳跃链的潜力
-            all_moves.append((score + potential_bonus, action_idx, move))
-        
-        for score, action_idx, move in walks:
-            all_moves.append((score, action_idx, move))
-        
-        if all_moves:
-            all_moves.sort(key=lambda x: x[0], reverse=True)
-            return all_moves[0][1]
-        
-        # 只有END_TURN
-        return end_turn_action if end_turn_action else legal_indices[0]
-
-    def _search_best_move(self, legal_indices, obs):
-        """搜索最佳移动"""
-        if len(legal_indices) == 0:
-            return self.action_space_dim - 1
-        
-        if len(legal_indices) == 1:
-            return legal_indices[0]
-        
-        return self._find_best_jump_chain(legal_indices, obs)
-
-    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
-                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        
-        for obs in obs_batch:
-            action_mask = obs["action_mask"]
-            legal_indices = np.where(action_mask == 1)[0]
-            
-            if len(legal_indices) == 0:
-                actions.append(self.action_space_dim - 1)
-                continue
-            
-            best_action = self._search_best_move(legal_indices, obs)
-            actions.append(best_action)
-        
-        return actions, [], {}
-
-    def compute_single_action(self, obs, state=None, prev_action=None,
-                              prev_reward=None, info=None, episode=None, **kwargs):
-        return self.compute_actions(
-            [obs],
-            state_batches=[state],
-            prev_action_batch=[prev_action],
-            prev_reward_batch=[prev_reward],
-            info_batch=[info],
-            episodes=[episode],
-            **kwargs
-        )[0]
-
-
-# =============================================================================
-# 超级算法: SuperPolicy - 综合多种策略，动态切换
-# =============================================================================
-class SuperPolicy(Policy):
-    """
-    超级策略 - 综合多种评估方法
-    1. 强制继续跳跃链（如果有跳跃可继续）
-    2. 开始新跳跃链时考虑跳跃的累积收益
-    3. 精细的方向权重调整
-    """
-    def __init__(self, triangle_size=4, config={}):
-        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
-        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
-        super().__init__(observation_space, action_space, config)
-        self.triangle_size = triangle_size
-        self.action_space_dim = action_space.n
-        self.n = triangle_size
-
-    def _has_jump_in_progress(self, obs):
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        return np.any(observation[:, :, 2] == 1)
-
-    def _categorize_moves(self, legal_indices):
-        """将合法移动分类"""
-        categories = {
-            'down_jump': [],    # 向下跳跃（最优）
-            'side_jump': [],    # 横向跳跃
-            'up_jump': [],      # 向上跳跃
-            'down_walk': [],    # 向下行走
-            'side_walk': [],    # 横向行走
-            'up_walk': [],      # 向上行走
-            'end_turn': None
-        }
-        
-        for action_idx in legal_indices:
-            move = action_to_move(action_idx, self.n)
-            
-            if move == Move.END_TURN:
-                categories['end_turn'] = action_idx
-                continue
-            
-            is_down = move.direction in [Direction.DownLeft, Direction.DownRight]
-            is_side = move.direction in [Direction.Left, Direction.Right]
-            is_up = move.direction in [Direction.UpLeft, Direction.UpRight]
-            
-            if move.is_jump:
-                if is_down:
-                    categories['down_jump'].append(action_idx)
-                elif is_side:
-                    categories['side_jump'].append(action_idx)
-                else:
-                    categories['up_jump'].append(action_idx)
-            else:
-                if is_down:
-                    categories['down_walk'].append(action_idx)
-                elif is_side:
-                    categories['side_walk'].append(action_idx)
-                else:
-                    categories['up_walk'].append(action_idx)
-        
-        return categories
-
-    def _select_from_priority(self, categories, priority_order):
-        """按优先级顺序选择"""
-        for category in priority_order:
-            if category == 'end_turn':
-                if categories['end_turn'] is not None:
-                    return categories['end_turn']
-            elif categories[category]:
-                return categories[category][0]
-        return None
-
-    def _search_best_move(self, legal_indices, obs):
-        if len(legal_indices) == 0:
-            return self.action_space_dim - 1
-        
-        if len(legal_indices) == 1:
-            return legal_indices[0]
-        
-        has_jump = self._has_jump_in_progress(obs)
-        categories = self._categorize_moves(legal_indices)
-        
-        # 检查是否有任何跳跃可用
-        has_any_jump = bool(categories['down_jump'] or categories['side_jump'] or categories['up_jump'])
-        
-        if has_jump:
-            # 正在跳跃链中 - 必须继续跳或结束
-            # 优先级：向下跳 > 横向跳 > 向上跳 > 结束
-            priority = ['down_jump', 'side_jump', 'up_jump', 'end_turn']
-            result = self._select_from_priority(categories, priority)
-            if result is not None:
-                return result
-        else:
-            # 不在跳跃链中 - 可以选择任何移动
-            # 优先级：向下跳 > 横向跳 > 向下走 > 横向走 > 向上跳 > 向上走
-            priority = ['down_jump', 'side_jump', 'down_walk', 'side_walk', 'up_jump', 'up_walk', 'end_turn']
-            result = self._select_from_priority(categories, priority)
-            if result is not None:
-                return result
-        
-        return legal_indices[0]
-
-    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
-                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        
-        for obs in obs_batch:
-            action_mask = obs["action_mask"]
-            legal_indices = np.where(action_mask == 1)[0]
-            
-            if len(legal_indices) == 0:
-                actions.append(self.action_space_dim - 1)
-                continue
-            
-            best_action = self._search_best_move(legal_indices, obs)
-            actions.append(best_action)
-        
-        return actions, [], {}
-
-    def compute_single_action(self, obs, state=None, prev_action=None,
-                              prev_reward=None, info=None, episode=None, **kwargs):
-        return self.compute_actions(
-            [obs],
-            state_batches=[state],
-            prev_action_batch=[prev_action],
-            prev_reward_batch=[prev_reward],
-            info_batch=[info],
-            episodes=[episode],
-            **kwargs
-        )[0]
+if __name__ == "__main__":
+    pass

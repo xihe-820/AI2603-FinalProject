@@ -182,39 +182,39 @@ class raw_env(AECEnv):
 
         # 奖励分配逻辑
         if self.game.did_player_win(self.agent_name_mapping[agent]):
-            # 玩家获胜 - 大奖励
+            # 玩家获胜 - 超大奖励（最重要的学习信号）
             self.terminations = {
                 agent: self.game.is_game_over() for agent in self.agents
             }
             for a in self.agents:
-                self.rewards[a] = 100 if a == agent else -10  # 增大胜负奖励差距
+                self.rewards[a] = 10000 if a == agent else -10000  # 极大的胜负奖励
             self.winner = agent
         elif move is None:
             # 非法移动
-            self.rewards[agent] = -1000
+            self.rewards[agent] = -100
         else:
-            # 基于进度变化的奖励（核心改进）
-            progress_reward = (new_progress - old_progress) * 2.0  # 进度奖励
+            # 基于进度变化的奖励（降低权重）
+            progress_reward = (new_progress - old_progress) * 0.5  # 降低进度奖励
             self.rewards[agent] = progress_reward
             
-            # 方向相关的奖励/惩罚（增强）
+            # 方向相关的奖励/惩罚
             if isinstance(move, Move) and move != Move.END_TURN:
                 if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                    self.rewards[agent] += 0.1  # 向下移动奖励
+                    self.rewards[agent] += 0.05  # 向下移动奖励
                     if move.is_jump:
-                        self.rewards[agent] += 0.2  # 向下跳跃额外奖励
+                        self.rewards[agent] += 0.1  # 向下跳跃额外奖励
                 elif move.direction in [Direction.UpLeft, Direction.UpRight]:
-                    self.rewards[agent] -= 0.15  # 向上移动惩罚
+                    self.rewards[agent] -= 0.1  # 向上移动惩罚
             
-            # 目标区域进出奖励（增强）
+            # 目标区域进出奖励
             if move and move != Move.END_TURN:
                 src_pos = move.position
                 dst_pos = move.moved_position()
                 target = [Position(q, r) for q, r, s in self.game.get_target_coordinates(player)]
                 if src_pos not in target and dst_pos in target:
-                    self.rewards[agent] += 1.0  # 进入目标区域（增大10倍）
+                    self.rewards[agent] += 5.0  # 进入目标区域
                 if src_pos in target and dst_pos not in target:
-                    self.rewards[agent] -= 1.5  # 离开目标区域（惩罚更重）
+                    self.rewards[agent] -= 10.0  # 离开目标区域（严重惩罚）
 
         self._accumulate_rewards()  # 累积奖励
         self._clear_rewards()       # 清除当前奖励
