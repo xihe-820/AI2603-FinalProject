@@ -23,7 +23,7 @@ from ChineseChecker.logger import custom_log_creator
 from agents import GreedyPolicy
 
 
-def create_config(env_name: str, triangle_size: int = 4):
+def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
     """创建PPO配置"""
     rlm_class = TorchActionMaskRLM
     model_config = {"fcnet_hiddens": [256, 256, 128]}
@@ -39,6 +39,7 @@ def create_config(env_name: str, triangle_size: int = 4):
         print(f"检测到GPU: {torch.cuda.get_device_name(0)}, 将使用GPU训练")
     else:
         print("未检测到GPU, 使用CPU训练")
+    print(f"使用 {num_workers} 个并行worker进行环境采样")
 
     config = (
         PPOConfig()
@@ -53,8 +54,13 @@ def create_config(env_name: str, triangle_size: int = 4):
                 "observation_space": Box(low=0, high=1, shape=(observation_space_dim,), dtype=np.int8),
             },
         )
+        .rollouts(
+            num_rollout_workers=num_workers,  # 增加并行worker
+            num_envs_per_worker=2,            # 每个worker运行2个环境
+            rollout_fragment_length="auto",
+        )
         .training(
-            train_batch_size=2048,
+            train_batch_size=4096,            # 增大batch size
             lr=3e-4,
             gamma=0.995,
             lambda_=0.95,
@@ -62,7 +68,7 @@ def create_config(env_name: str, triangle_size: int = 4):
             clip_param=0.2,
             grad_clip=0.5,
             vf_loss_coeff=0.5,
-            sgd_minibatch_size=256,
+            sgd_minibatch_size=512,           # 增大minibatch
             num_sgd_iter=10,
             entropy_coeff=0.005,
             _enable_learner_api=True
@@ -149,7 +155,7 @@ def main(args):
 
     ray.init(num_cpus=args.num_cpus or None, local_mode=args.local_mode)
     
-    config = create_config(env_name, args.triangle_size)
+    config = create_config(env_name, args.triangle_size, args.num_workers)
     
     timestr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     logdir = f"logs/vs_greedy_{timestr}"
@@ -202,7 +208,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Train vs Greedy')
     parser.add_argument('--train_iters', type=int, default=200)
     parser.add_argument('--triangle_size', type=int, default=2)
-    parser.add_argument('--num_cpus', type=int, default=4)
+    parser.add_argument('--num_cpus', type=int, default=16)
+    parser.add_argument('--num_workers', type=int, default=8, help='并行采样worker数量')
     parser.add_argument('--local_mode', action='store_true')
     args = parser.parse_args()
     main(args)
