@@ -170,7 +170,7 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
 
 def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
     """评估策略对抗Greedy"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=200)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
     greedy = GreedyPolicy(triangle_size)
     
     wins = 0
@@ -204,7 +204,7 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
 
 def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
     """评估策略对抗RL Baseline"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=200)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
     
     wins = 0
     for i in range(num_trials):
@@ -350,8 +350,8 @@ def main(args):
         
         # 每N次评估一下
         if i % args.eval_period == 0:
-            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=30)
-            winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=30)
+            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=10)
+            winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=10)
             
             print(f"[阶段{phase}] Iter {i}: reward={result['episode_reward_mean']:.1f}, "
                   f"vs_Greedy={winrate_greedy*100:.0f}%, vs_RL={winrate_rl*100:.0f}%")
@@ -469,7 +469,7 @@ if __name__ == "__main__":
     parser.add_argument('--triangle_size', type=int, default=2)
     parser.add_argument('--num_cpus', type=int, default=16)
     parser.add_argument('--num_workers', type=int, default=8, help='并行采样worker数量')
-    parser.add_argument('--eval_period', type=int, default=10, help='评估间隔')
+    parser.add_argument('--eval_period', type=int, default=20, help='评估间隔')
     parser.add_argument('--restore_from', type=str, default=None, help='从checkpoint恢复训练')
     parser.add_argument('--local_mode', action='store_true')
     args = parser.parse_args()
