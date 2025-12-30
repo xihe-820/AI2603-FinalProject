@@ -105,6 +105,29 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
     return wins / num_trials
 
 
+def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
+    """评估策略对抗RL Baseline"""
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=200)
+    
+    wins = 0
+    for i in range(num_trials):
+        env.reset(seed=i)
+        for agent in env.agent_iter():
+            obs, reward, termination, truncation, info = env.last()
+            if termination or truncation:
+                break
+            if agent == env.possible_agents[0]:
+                action = policy.compute_single_action(obs)[0]
+            else:
+                action = rl_baseline.compute_single_action(obs)[0]
+            env.step(int(action))
+        
+        if env.unwrapped.winner == env.possible_agents[0]:
+            wins += 1
+    
+    return wins / num_trials
+
+
 def train_vs_greedy_env(policy, greedy_policy, env, num_episodes=100):
     """
     让RL策略与Greedy对弈收集经验
