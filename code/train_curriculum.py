@@ -27,17 +27,28 @@ from agents import GreedyPolicy
 _greedy_policy = None
 _rl_baseline_policy = None
 _rl_opponent_ratio = 0.0  # RL对手的比例
+_triangle_size_global = 2  # 全局棋盘大小
 
 
 def get_opponent_policies(triangle_size):
     """懒加载对手策略"""
-    global _greedy_policy, _rl_baseline_policy
+    global _greedy_policy, _rl_baseline_policy, _triangle_size_global
+    _triangle_size_global = triangle_size
+    
     if _greedy_policy is None:
         _greedy_policy = GreedyPolicy(triangle_size)
+        print(f"[Worker] 加载 GreedyPolicy (triangle_size={triangle_size})")
+    
     if _rl_baseline_policy is None:
-        _rl_baseline_policy = Policy.from_checkpoint(
-            os.path.join(os.path.dirname(__file__), 'pretrained')
-        )['default_policy']
+        try:
+            checkpoint_path = os.path.join(os.path.dirname(__file__), 'pretrained')
+            _rl_baseline_policy = Policy.from_checkpoint(checkpoint_path)
+            _rl_baseline_policy = _rl_baseline_policy['default_policy']
+            print(f"[Worker] 加载 RL Baseline Policy")
+        except Exception as e:
+            print(f"[Worker] 加载 RL Baseline 失败: {e}, 使用 Greedy 代替")
+            _rl_baseline_policy = _greedy_policy
+    
     return _greedy_policy, _rl_baseline_policy
 
 
@@ -49,7 +60,6 @@ class SingleAgentEnvWrapper(gym.Env):
     def __init__(self, config):
         self.triangle_size = config.get("triangle_size", 2)
         self.max_iters = config.get("max_iters", 200)
-        self.rl_ratio = config.get("rl_opponent_ratio", 0.0)
         
         # 创建底层环境
         self.env = chinese_checker_v0.env(
@@ -81,36 +91,57 @@ class SingleAgentEnvWrapper(gym.Env):
             return self.rl_baseline
         return self.greedy
     
+    def _play_opponent_turn(self):
+        """执行对手回合，直到轮到我方或游戏结束"""
+        while self.env.agent_selection == self.opponent_agent:
+            obs, reward, termination, truncation, info = self.env.last()
+            if termination or truncation:
+                return True  # 游戏结束
+            opp_action = self.opponent.compute_single_action(obs)[0]
+            self.env.step(int(opp_action))
+        return False  # 游戏继续
+    
     def reset(self, seed=None, options=None):
         self.env.reset(seed=seed)
-        self.my_agent = self.env.possible_agents[0]
-        self.opponent_agent = self.env.possible_agents[1]
+        self.my_agent = self.env.possible_agents[0]  # player_0
+        self.opponent_agent = self.env.possible_agents[1]  # player_3
         self.opponent = self._select_opponent()
         
-        # 获取初始观察
+        # 如果对手先手，先让对手下
+        if self.env.agent_selection == self.opponent_agent:
+            self._play_opponent_turn()
+        
+        # 获取我方观察
         obs, _, _, _, _ = self.env.last()
         return obs, {}
     
     def step(self, action):
+        # 确保现在是我方回合
+        if self.env.agent_selection != self.my_agent:
+            # 不应该发生，但以防万一
+            obs, reward, termination, truncation, info = self.env.last()
+            return obs, reward, termination, truncation, info
+        
         # 我方行动
         self.env.step(action)
         
         # 检查游戏是否结束
         obs, reward, termination, truncation, info = self.env.last()
         if termination or truncation:
-            return obs, reward, termination, truncation, info
+            # 判断胜负：如果我方赢了，winner 应该是 my_agent
+            my_reward = reward
+            return obs, my_reward, termination, truncation, info
         
-        # 对手回合（可能多步，因为跳跃链）
-        while self.env.agent_selection == self.opponent_agent:
-            opp_obs, opp_reward, opp_term, opp_trunc, opp_info = self.env.last()
-            if opp_term or opp_trunc:
-                break
-            opp_action = self.opponent.compute_single_action(opp_obs)[0]
-            self.env.step(int(opp_action))
+        # 如果还是我方回合（跳跃链），直接返回让agent继续
+        if self.env.agent_selection == self.my_agent:
+            return obs, reward, False, False, info
         
-        # 返回我方下一个状态
+        # 对手回合
+        game_ended = self._play_opponent_turn()
+        
+        # 获取我方下一个状态
         obs, reward, termination, truncation, info = self.env.last()
-        return obs, reward, termination, truncation, info
+        return obs, reward, termination or game_ended, truncation, info
     
     def close(self):
         self.env.close()
