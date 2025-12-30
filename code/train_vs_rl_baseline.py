@@ -112,14 +112,28 @@ def main(args):
 
     config = create_config(env_name, args.triangle_size, args.num_workers)
 
-    # 如果有预训练模型，从checkpoint恢复整个算法
+    # 创建算法
+    algo = config.build()
+    
+    # 如果有预训练模型，加载权重
     if args.checkpoint:
         print(f"从 {args.checkpoint} 加载预训练模型...")
-        # 使用from_checkpoint加载，然后更新配置
-        from ray.rllib.algorithms.ppo import PPO
-        algo = PPO.from_checkpoint(args.checkpoint)
-    else:
-        algo = config.build()
+        # 加载预训练的policy权重
+        pretrained_policy = Policy.from_checkpoint(args.checkpoint)
+        pretrained_policy = pretrained_policy['default_policy']
+        
+        # 获取当前算法的policy并设置权重
+        current_policy = algo.get_policy("default_policy")
+        current_policy.set_weights(pretrained_policy.get_weights())
+        
+        # 同步到所有workers
+        algo.workers.sync_weights()
+        
+        # 验证加载
+        print("验证模型加载...")
+        greedy = GreedyPolicy(args.triangle_size)
+        test_wr = evaluate_vs_opponent(current_policy, greedy, args.triangle_size, num_trials=10)
+        print(f"加载后 vs Greedy 胜率: {test_wr*100:.0f}%")
 
     # 加载RL Baseline作为对手
     rl_baseline = Policy.from_checkpoint(os.path.join(os.path.dirname(__file__), 'pretrained'))
