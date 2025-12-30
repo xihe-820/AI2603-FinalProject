@@ -186,8 +186,18 @@ def main(args):
     
     algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
     
+    # 从checkpoint恢复
+    if args.restore_from:
+        print(f"从checkpoint恢复: {args.restore_from}")
+        algo.restore(args.restore_from)
+    
     greedy = GreedyPolicy(args.triangle_size)
+    
+    # 加载RL Baseline用于评估
+    rl_baseline = Policy.from_checkpoint("pretrained/policies/default_policy")
+    
     best_winrate = 0.0
+    best_rl_winrate = 0.0
     
     print("开始对抗Greedy训练...")
     print("="*60)
@@ -201,15 +211,19 @@ def main(args):
         
         # 每10次评估一下
         if i % args.eval_period == 0:
-            winrate = evaluate_vs_greedy(policy, args.triangle_size, num_trials=20)
-            print(f"Iteration {i}: reward_mean={result['episode_reward_mean']:.1f}, vs_Greedy={winrate*100:.1f}%")
+            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=20)
+            winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=20)
+            print(f"Iter {i}: reward={result['episode_reward_mean']:.1f}, vs_Greedy={winrate_greedy*100:.0f}%, vs_RL={winrate_rl*100:.0f}%")
             
-            # 保存最好的模型
-            if winrate > best_winrate:
-                best_winrate = winrate
+            # 保存对RL Baseline表现最好的模型
+            if winrate_rl > best_rl_winrate:
+                best_rl_winrate = winrate_rl
                 checkpoint_dir = f"{logdir}/best_checkpoint"
                 algo.save(checkpoint_dir=checkpoint_dir)
-                print(f"  -> 新最佳模型! 胜率: {winrate*100:.1f}%")
+                print(f"  -> 新最佳! vs_RL: {winrate_rl*100:.0f}%")
+            
+            if winrate_greedy > best_winrate:
+                best_winrate = winrate_greedy
         
         # 定期保存
         if i % 50 == 0:
@@ -218,10 +232,13 @@ def main(args):
     
     # 最终评估
     policy = algo.get_policy("default_policy")
-    final_winrate = evaluate_vs_greedy(policy, args.triangle_size, num_trials=50)
+    final_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=50)
+    final_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=50)
     print("="*60)
-    print(f"训练完成! 最终 vs Greedy 胜率: {final_winrate*100:.1f}%")
-    print(f"最佳胜率: {best_winrate*100:.1f}%")
+    print(f"训练完成!")
+    print(f"最终 vs Greedy: {final_greedy*100:.1f}%")
+    print(f"最终 vs RL Baseline: {final_rl*100:.1f}%")
+    print(f"最佳 vs RL: {best_rl_winrate*100:.1f}%")
     print(f"模型保存在: {logdir}")
     
     ray.shutdown()
@@ -234,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_cpus', type=int, default=16)
     parser.add_argument('--num_workers', type=int, default=8, help='并行采样worker数量')
     parser.add_argument('--eval_period', type=int, default=10, help='评估间隔')
+    parser.add_argument('--restore_from', type=str, default=None, help='从checkpoint恢复训练')
     parser.add_argument('--local_mode', action='store_true')
     args = parser.parse_args()
     main(args)
