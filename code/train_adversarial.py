@@ -31,7 +31,21 @@ class GreedyPolicyWrapper(Policy):
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
         actions = []
-        for obs in obs_batch:
+        for i in range(len(obs_batch)):
+            # RLlib 传入的 obs_batch 可能是 dict 或直接数组
+            if isinstance(obs_batch, dict):
+                obs = {
+                    "observation": obs_batch["observation"][i],
+                    "action_mask": obs_batch["action_mask"][i]
+                }
+            else:
+                # 如果是数组，我们需要重建 dict
+                obs = obs_batch[i]
+                if not isinstance(obs, dict):
+                    # 假设全部合法
+                    action_mask = np.ones(self.action_space.n, dtype=np.int8)
+                    obs = {"observation": obs, "action_mask": action_mask}
+            
             action = self.greedy.compute_single_action(obs)[0]
             actions.append(action)
         return actions, [], {}
@@ -58,7 +72,18 @@ class RLBaselinePolicyWrapper(Policy):
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
         actions = []
-        for obs in obs_batch:
+        for i in range(len(obs_batch)):
+            if isinstance(obs_batch, dict):
+                obs = {
+                    "observation": obs_batch["observation"][i],
+                    "action_mask": obs_batch["action_mask"][i]
+                }
+            else:
+                obs = obs_batch[i]
+                if not isinstance(obs, dict):
+                    action_mask = np.ones(self.action_space.n, dtype=np.int8)
+                    obs = {"observation": obs, "action_mask": action_mask}
+            
             action = self.baseline.compute_single_action(obs)[0]
             actions.append(action)
         return actions, [], {}
