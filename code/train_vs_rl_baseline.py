@@ -112,13 +112,14 @@ def main(args):
 
     config = create_config(env_name, args.triangle_size, args.num_workers)
 
-    # 创建算法
-    algo = config.build()
-    
-    # 如果有预训练模型，加载它
+    # 如果有预训练模型，从checkpoint恢复整个算法
     if args.checkpoint:
         print(f"从 {args.checkpoint} 加载预训练模型...")
-        algo.restore(args.checkpoint)
+        # 使用from_checkpoint加载，然后更新配置
+        from ray.rllib.algorithms.ppo import PPO
+        algo = PPO.from_checkpoint(args.checkpoint)
+    else:
+        algo = config.build()
 
     # 加载RL Baseline作为对手
     rl_baseline = Policy.from_checkpoint(os.path.join(os.path.dirname(__file__), 'pretrained'))
