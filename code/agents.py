@@ -602,17 +602,16 @@ class AdaptiveStrategyPolicy(Policy):
 
 
 # =============================================================================
-# 强化算法: EnhancedPolicy - 综合位置与跳跃链评估
+# 强化算法: EnhancedPolicy - 深度跳跃链搜索
 # =============================================================================
 class EnhancedPolicy(Policy):
     """
-    增强策略 - 综合多种因素进行评估
+    增强策略 - 使用深度搜索找到最佳跳跃链
     
     核心思想：
-    1. 利用observation中的棋子位置信息
-    2. 评估每个移动对整体进度的贡献
-    3. 特别优化跳跃链的利用
-    4. 考虑棋子的分布（避免棋子堆积）
+    1. 对每个可能的移动，模拟执行并搜索后续最佳跳跃链
+    2. 评估整个跳跃链的总进度
+    3. 选择能够获得最大进度的移动序列
     """
     def __init__(self, triangle_size=4, config={}):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -622,6 +621,16 @@ class EnhancedPolicy(Policy):
         self.action_space_dim = action_space.n
         self.n = triangle_size
         self.board_size = 4 * self.n + 1
+        # 目标区域
+        self.target_zone = self._compute_target_zone()
+
+    def _compute_target_zone(self):
+        """计算目标三角区域"""
+        target = set()
+        for r in range(self.n + 1, 2 * self.n + 1):
+            for q in range(-(2 * self.n - r), 1):
+                target.add((q, r))
+        return target
 
     def _parse_board(self, obs):
         """解析棋盘状态"""
@@ -647,87 +656,97 @@ class EnhancedPolicy(Policy):
         
         return my_pieces, opp_pieces, has_jump_in_progress, jump_source
 
-    def _get_r_delta(self, direction, is_jump):
-        """获取r坐标变化量"""
-        delta = {
-            Direction.DownLeft: 1,
-            Direction.DownRight: 1,
-            Direction.Left: 0,
-            Direction.Right: 0,
-            Direction.UpLeft: -1,
-            Direction.UpRight: -1,
-        }
-        base = delta.get(direction, 0)
-        return base * 2 if is_jump else base
+    def _is_valid_position(self, q, r):
+        """检查位置是否在棋盘内"""
+        s = -q - r
+        return abs(q) <= 2*self.n and abs(r) <= 2*self.n and abs(s) <= 2*self.n
 
-    def _count_potential_jumps(self, from_q, from_r, all_pieces, direction_taken=None):
+    def _find_best_jump_chain(self, start_q, start_r, all_occupied, visited=None, depth=0):
         """
-        计算从某个位置可能的跳跃数量
-        用于评估跳跃链的潜力
+        递归搜索从某位置开始的最佳跳跃链
+        返回: (最大r进度, 跳跃次数)
         """
-        all_occupied = set(all_pieces)
-        potential = 0
-        best_delta_r = -10
+        if visited is None:
+            visited = {(start_q, start_r)}
+        
+        if depth > 10:  # 防止无限递归
+            return 0, 0
+        
+        best_progress = 0
+        best_jumps = 0
         
         for direction in Direction:
             dq, dr = DIRECTION_DELTAS[direction]
-            mid_q, mid_r = from_q + dq, from_r + dr
-            land_q, land_r = from_q + 2*dq, from_r + 2*dr
+            mid_q, mid_r = start_q + dq, start_r + dr
+            land_q, land_r = start_q + 2*dq, start_r + 2*dr
             
-            # 检查是否可以跳跃
-            if (mid_q, mid_r) in all_occupied:
-                if (land_q, land_r) not in all_occupied:
-                    # 检查落点在棋盘内
-                    if abs(land_q) <= 2*self.n and abs(land_r) <= 2*self.n:
-                        potential += 1
-                        if dr > best_delta_r:
-                            best_delta_r = dr
+            # 检查跳跃条件
+            if (mid_q, mid_r) in all_occupied:  # 有棋子可以跳过
+                if (land_q, land_r) not in all_occupied:  # 落点为空
+                    if self._is_valid_position(land_q, land_r):  # 落点在棋盘内
+                        if (land_q, land_r) not in visited:  # 未访问过
+                            # 计算这一跳的进度
+                            jump_progress = land_r - start_r
+                            
+                            # 递归搜索后续跳跃
+                            new_visited = visited | {(land_q, land_r)}
+                            new_occupied = (all_occupied - {(start_q, start_r)}) | {(land_q, land_r)}
+                            further_progress, further_jumps = self._find_best_jump_chain(
+                                land_q, land_r, new_occupied, new_visited, depth + 1
+                            )
+                            
+                            total_progress = jump_progress + further_progress
+                            total_jumps = 1 + further_jumps
+                            
+                            if total_progress > best_progress or (total_progress == best_progress and total_jumps > best_jumps):
+                                best_progress = total_progress
+                                best_jumps = total_jumps
         
-        return potential, best_delta_r
+        return best_progress, best_jumps
 
-    def _evaluate_move(self, move, my_pieces, opp_pieces, has_jump, jump_count):
-        """综合评估移动"""
+    def _evaluate_move(self, move, my_pieces, opp_pieces, has_jump):
+        """评估移动的价值"""
         if move == Move.END_TURN:
-            # 如果在跳跃链中且还有跳跃可继续，严重惩罚
-            if has_jump and jump_count > 0:
-                return -5000
-            return -1
+            return -1  # 结束回合的基础分
         
         score = 0.0
-        all_pieces = my_pieces + opp_pieces
+        q, r = move.position.q, move.position.r
+        dq, dr = DIRECTION_DELTAS[move.direction]
         
-        # 1. 基础方向分数
-        r_delta = self._get_r_delta(move.direction, move.is_jump)
-        score += r_delta * 100  # 进度最重要
-        
-        # 2. 跳跃奖励
         if move.is_jump:
-            score += 80  # 基础跳跃奖励
-            
-            # 计算跳跃后的位置
-            q, r = move.position.q, move.position.r
-            dq, dr = DIRECTION_DELTAS[move.direction]
             new_q, new_r = q + 2*dq, r + 2*dr
-            
-            # 评估跳跃后的继续潜力
-            # 更新棋子集合
-            updated_pieces = [p for p in all_pieces if p != (q, r)]
-            updated_pieces.append((new_q, new_r))
-            
-            potential, best_dr = self._count_potential_jumps(new_q, new_r, updated_pieces)
-            score += potential * 40  # 每个潜在跳跃加分
-            if best_dr > 0:
-                score += 50  # 如果有向下跳跃的可能
-            
-            # 跳跃链延续奖励
-            if has_jump:
-                score += 60
+            step = 2
         else:
-            # 普通移动
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 40
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 10
+            new_q, new_r = q + dq, r + dr
+            step = 1
+        
+        # 基础进度分 (r方向的移动)
+        r_progress = new_r - r
+        score += r_progress * 100
+        
+        all_occupied = set(my_pieces) | set(opp_pieces)
+        
+        if move.is_jump:
+            # 跳跃奖励
+            score += 50
+            
+            # 搜索后续跳跃链潜力
+            new_occupied = (all_occupied - {(q, r)}) | {(new_q, new_r)}
+            chain_progress, chain_jumps = self._find_best_jump_chain(new_q, new_r, new_occupied)
+            score += chain_progress * 80  # 后续跳跃链的进度
+            score += chain_jumps * 30  # 每次跳跃的奖励
+        
+        # 目标区域奖励
+        if (new_q, new_r) in self.target_zone:
+            if (q, r) not in self.target_zone:
+                score += 200  # 进入目标区域
+            score += 100  # 在目标区域内
+        elif (q, r) in self.target_zone:
+            score -= 500  # 离开目标区域惩罚
+        
+        # 后排棋子优先移动
+        if r < 0:
+            score += 20  # 鼓励移动后排棋子
         
         return score
 
@@ -741,17 +760,10 @@ class EnhancedPolicy(Policy):
         
         my_pieces, opp_pieces, has_jump, jump_source = self._parse_board(obs)
         
-        # 统计可用跳跃数
-        jump_count = 0
-        for idx in legal_indices:
-            m = action_to_move(idx, self.n)
-            if m != Move.END_TURN and m.is_jump:
-                jump_count += 1
-        
         scored_moves = []
         for action_idx in legal_indices:
             move = action_to_move(action_idx, self.n)
-            score = self._evaluate_move(move, my_pieces, opp_pieces, has_jump, jump_count)
+            score = self._evaluate_move(move, my_pieces, opp_pieces, has_jump)
             scored_moves.append((score, action_idx))
         
         scored_moves.sort(key=lambda x: x[0], reverse=True)
