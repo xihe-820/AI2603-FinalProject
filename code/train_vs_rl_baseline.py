@@ -121,18 +121,16 @@ def main(args):
         # 加载预训练的policy权重
         pretrained_policy = Policy.from_checkpoint(args.checkpoint)
         pretrained_policy = pretrained_policy['default_policy']
+        weights = pretrained_policy.get_weights()
         
-        # 获取当前算法的policy并设置权重
-        current_policy = algo.get_policy("default_policy")
-        current_policy.set_weights(pretrained_policy.get_weights())
-        
-        # 同步到所有workers
-        algo.workers.sync_weights()
+        # 设置到算法的所有组件
+        algo.set_weights({"default_policy": weights})
         
         # 验证加载
         print("验证模型加载...")
         greedy = GreedyPolicy(args.triangle_size)
-        test_wr = evaluate_vs_opponent(current_policy, greedy, args.triangle_size, num_trials=10)
+        policy = algo.get_policy("default_policy")
+        test_wr = evaluate_vs_opponent(policy, greedy, args.triangle_size, num_trials=10)
         print(f"加载后 vs Greedy 胜率: {test_wr*100:.0f}%")
 
     # 加载RL Baseline作为对手
