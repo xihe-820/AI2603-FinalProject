@@ -194,7 +194,9 @@ def main(args):
             restored_policy = Policy.from_checkpoint(os.path.join(args.restore_from, "policies", "default_policy"))
             current_policy = algo.get_policy("default_policy")
             current_policy.set_weights(restored_policy.get_weights())
-            print("成功恢复权重!")
+            # 同步权重到所有worker
+            algo.workers.sync_weights()
+            print("成功恢复权重并同步到所有worker!")
         except Exception as e:
             print(f"无法从checkpoint恢复权重: {e}")
             print("将从头开始训练...")
