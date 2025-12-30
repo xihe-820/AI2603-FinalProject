@@ -9,6 +9,7 @@ import argparse
 from tqdm import tqdm
 
 from gymnasium.spaces import Box, Discrete
+import gymnasium as gym
 
 import ray
 from ray.tune.registry import register_env
@@ -22,9 +23,10 @@ from ChineseChecker.models.action_masking_rlm import TorchActionMaskRLM
 from ChineseChecker.logger import custom_log_creator
 from agents import GreedyPolicy
 
-class SingleAgentVsOpponent:
+class SingleAgentVsOpponent(gym.Env):
     """单agent环境包装器：agent对抗固定对手（Greedy或RL Baseline）"""
     def __init__(self, triangle_size=2, max_iters=200, opponent_type='greedy', rl_opponent_policy=None):
+        super().__init__()
         self.triangle_size = triangle_size
         self.max_iters = max_iters
         self.opponent_type = opponent_type
