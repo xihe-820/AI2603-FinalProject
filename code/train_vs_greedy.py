@@ -177,7 +177,7 @@ def main(args):
         policy = algo.get_policy("default_policy")
         
         # 每10次评估一下
-        if i % 10 == 0:
+        if i % args.eval_period == 0:
             winrate = evaluate_vs_greedy(policy, args.triangle_size, num_trials=20)
             print(f"Iteration {i}: reward_mean={result['episode_reward_mean']:.1f}, vs_Greedy={winrate*100:.1f}%")
             
@@ -210,6 +210,7 @@ if __name__ == "__main__":
     parser.add_argument('--triangle_size', type=int, default=2)
     parser.add_argument('--num_cpus', type=int, default=16)
     parser.add_argument('--num_workers', type=int, default=8, help='并行采样worker数量')
+    parser.add_argument('--eval_period', type=int, default=10, help='评估间隔')
     parser.add_argument('--local_mode', action='store_true')
     args = parser.parse_args()
     main(args)
