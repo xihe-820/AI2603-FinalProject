@@ -30,25 +30,44 @@ class GreedyPolicyWrapper(Policy):
     
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        for i in range(len(obs_batch)):
-            # RLlib 传入的 obs_batch 可能是 dict 或直接数组
-            if isinstance(obs_batch, dict):
-                obs = {
-                    "observation": obs_batch["observation"][i],
-                    "action_mask": obs_batch["action_mask"][i]
-                }
-            else:
-                # 如果是数组，我们需要重建 dict
-                obs = obs_batch[i]
-                if not isinstance(obs, dict):
-                    # 假设全部合法
-                    action_mask = np.ones(self.action_space.n, dtype=np.int8)
-                    obs = {"observation": obs, "action_mask": action_mask}
+        # obs_batch 是 dict，包含 "observation" 和 "action_mask"
+        # 每个都是 numpy array，第一维是 batch
+        if isinstance(obs_batch, dict):
+            observations = obs_batch.get("observation", obs_batch.get("obs"))
+            action_masks = obs_batch.get("action_mask")
             
-            action = self.greedy.compute_single_action(obs)[0]
-            actions.append(action)
-        return actions, [], {}
+            if observations is None:
+                # 可能整个 obs_batch 就是 observation
+                observations = obs_batch
+                action_masks = None
+            
+            # 确保是 2D
+            if len(observations.shape) == 1:
+                observations = observations.reshape(1, -1)
+                if action_masks is not None:
+                    action_masks = action_masks.reshape(1, -1)
+            
+            batch_size = observations.shape[0]
+            actions = []
+            
+            for i in range(batch_size):
+                obs = {
+                    "observation": observations[i],
+                    "action_mask": action_masks[i] if action_masks is not None else np.ones(self.action_space.n, dtype=np.int8)
+                }
+                action = self.greedy.compute_single_action(obs)[0]
+                actions.append(action)
+            
+            return actions, [], {}
+        else:
+            # obs_batch 是 list 或 array
+            actions = []
+            for obs in obs_batch:
+                if not isinstance(obs, dict):
+                    obs = {"observation": obs, "action_mask": np.ones(self.action_space.n, dtype=np.int8)}
+                action = self.greedy.compute_single_action(obs)[0]
+                actions.append(action)
+            return actions, [], {}
     
     def get_weights(self):
         return {}
@@ -71,22 +90,39 @@ class RLBaselinePolicyWrapper(Policy):
     
     def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
                        prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        for i in range(len(obs_batch)):
-            if isinstance(obs_batch, dict):
-                obs = {
-                    "observation": obs_batch["observation"][i],
-                    "action_mask": obs_batch["action_mask"][i]
-                }
-            else:
-                obs = obs_batch[i]
-                if not isinstance(obs, dict):
-                    action_mask = np.ones(self.action_space.n, dtype=np.int8)
-                    obs = {"observation": obs, "action_mask": action_mask}
+        if isinstance(obs_batch, dict):
+            observations = obs_batch.get("observation", obs_batch.get("obs"))
+            action_masks = obs_batch.get("action_mask")
             
-            action = self.baseline.compute_single_action(obs)[0]
-            actions.append(action)
-        return actions, [], {}
+            if observations is None:
+                observations = obs_batch
+                action_masks = None
+            
+            if len(observations.shape) == 1:
+                observations = observations.reshape(1, -1)
+                if action_masks is not None:
+                    action_masks = action_masks.reshape(1, -1)
+            
+            batch_size = observations.shape[0]
+            actions = []
+            
+            for i in range(batch_size):
+                obs = {
+                    "observation": observations[i],
+                    "action_mask": action_masks[i] if action_masks is not None else np.ones(self.action_space.n, dtype=np.int8)
+                }
+                action = self.baseline.compute_single_action(obs)[0]
+                actions.append(action)
+            
+            return actions, [], {}
+        else:
+            actions = []
+            for obs in obs_batch:
+                if not isinstance(obs, dict):
+                    obs = {"observation": obs, "action_mask": np.ones(self.action_space.n, dtype=np.int8)}
+                action = self.baseline.compute_single_action(obs)[0]
+                actions.append(action)
+            return actions, [], {}
     
     def get_weights(self):
         return {}
