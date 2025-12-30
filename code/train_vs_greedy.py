@@ -392,19 +392,12 @@ def main(args):
                 print("开始阶段2训练...")
             
             # 检查是否达到最终目标
+            # 检查是否两个目标都达成
             if winrate_greedy >= 0.90 and winrate_rl >= 0.90:
                 print("\n" + "=" * 60)
                 print(f"🎊 训练完成! vs Greedy={winrate_greedy*100:.0f}%, vs RL={winrate_rl*100:.0f}%")
                 print("=" * 60)
                 break
-                print(f"  -> 新最佳vs Greedy: {winrate_greedy*100:.0f}%")
-            
-            # 保存对RL Baseline表现最好的模型
-            if winrate_rl > best_rl_winrate:
-                best_rl_winrate = winrate_rl
-                checkpoint_dir = f"{logdir}/best_vs_rl"
-                algo.save(checkpoint_dir=checkpoint_dir)
-                print(f"  -> 新最佳vs RL: {winrate_rl*100:.0f}%")
         
         # 定期保存
         if i % 50 == 0:
