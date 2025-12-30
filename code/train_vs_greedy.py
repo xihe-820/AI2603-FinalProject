@@ -186,10 +186,18 @@ def main(args):
     
     algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
     
-    # 从checkpoint恢复
+    # 从checkpoint恢复权重
     if args.restore_from:
-        print(f"从checkpoint恢复: {args.restore_from}")
-        algo.restore(args.restore_from)
+        print(f"从checkpoint恢复权重: {args.restore_from}")
+        try:
+            # 尝试加载policy的权重
+            restored_policy = Policy.from_checkpoint(os.path.join(args.restore_from, "policies", "default_policy"))
+            current_policy = algo.get_policy("default_policy")
+            current_policy.set_weights(restored_policy.get_weights())
+            print("成功恢复权重!")
+        except Exception as e:
+            print(f"无法从checkpoint恢复权重: {e}")
+            print("将从头开始训练...")
     
     greedy = GreedyPolicy(args.triangle_size)
     
