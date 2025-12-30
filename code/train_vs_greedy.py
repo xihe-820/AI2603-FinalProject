@@ -80,16 +80,37 @@ class SingleAgentVsOpponent(gym.Env):
         self.env.step(int(action))
         obs, reward, terminated, truncated, info = self.env.last()
         
+        done = terminated or truncated
+        
+        # 如果游戏结束，检查谁赢了
+        if done:
+            # agent刚走完游戏就结束，检查是否agent赢了
+            winner = self.env.unwrapped.winner
+            if winner == self.env.possible_agents[0]:
+                # Agent是player_0，赢了
+                reward = 1000
+            else:
+                # Agent输了
+                reward = -1000
         # 如果游戏没结束，让对手走
-        if not (terminated or truncated) and self.env.agent_selection == self.env.possible_agents[1]:
+        elif self.env.agent_selection == self.env.possible_agents[1]:
             opp_obs = obs
             opp_action = self.opponent.compute_single_action(opp_obs)[0]
             self.env.step(int(opp_action))
             obs, opp_reward, terminated, truncated, info = self.env.last()
-            # 对手的reward是我们的负reward
-            reward = -opp_reward if (terminated or truncated) else 0
+            
+            done = terminated or truncated
+            # 如果对手走完后游戏结束，检查谁赢了
+            if done:
+                winner = self.env.unwrapped.winner
+                if winner == self.env.possible_agents[0]:
+                    reward = 1000
+                else:
+                    reward = -1000
+            else:
+                reward = 0
         
-        return obs, reward, terminated, truncated, info
+        return obs, reward, done, done, info
 
 
 def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
@@ -159,8 +180,18 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
             obs, reward, termination, truncation, info = env.last()
             if termination or truncation:
                 break
+            
+            # 检查observation格式并处理
             if agent == env.possible_agents[0]:
-                action = policy.compute_single_action(obs)[0]
+                # RL策略：可能需要处理dict格式
+                try:
+                    action = policy.compute_single_action(obs)[0]
+                except Exception as e:
+                    # 如果obs是dict，尝试展平
+                    if isinstance(obs, dict) and "observation" in obs:
+                        action = policy.compute_single_action(obs["observation"])[0]
+                    else:
+                        raise e
             else:
                 action = greedy.compute_single_action(obs)[0]
             env.step(int(action))
@@ -182,10 +213,24 @@ def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
             obs, reward, termination, truncation, info = env.last()
             if termination or truncation:
                 break
+            
+            # 检查observation格式并处理
             if agent == env.possible_agents[0]:
-                action = policy.compute_single_action(obs)[0]
+                try:
+                    action = policy.compute_single_action(obs)[0]
+                except Exception as e:
+                    if isinstance(obs, dict) and "observation" in obs:
+                        action = policy.compute_single_action(obs["observation"])[0]
+                    else:
+                        raise e
             else:
-                action = rl_baseline.compute_single_action(obs)[0]
+                try:
+                    action = rl_baseline.compute_single_action(obs)[0]
+                except Exception as e:
+                    if isinstance(obs, dict) and "observation" in obs:
+                        action = rl_baseline.compute_single_action(obs["observation"])[0]
+                    else:
+                        raise e
             env.step(int(action))
         
         if env.unwrapped.winner == env.possible_agents[0]:
