@@ -8,7 +8,7 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 
-from gymnasium.spaces import Box, Discrete
+from gymnasium.spaces import Box, Discrete, Dict as GymDict
 import gymnasium as gym
 
 import ray
@@ -52,7 +52,11 @@ class SingleAgentVsOpponent(gym.Env):
         action_space_dim = (4 * triangle_size + 1) ** 2 * 6 * 2 + 1
         observation_space_dim = (4 * triangle_size + 1) ** 2 * 4
         
-        self.observation_space = Box(low=0, high=1, shape=(observation_space_dim,), dtype=np.float32)
+        # 使用Dict空间包含observation和action_mask
+        self.observation_space = GymDict({
+            "observation": Box(low=0, high=1, shape=(observation_space_dim,), dtype=np.int8),
+            "action_mask": Box(low=0, high=1, shape=(action_space_dim,), dtype=np.int8)
+        })
         self.action_space = Discrete(action_space_dim)
         
     def reset(self, seed=None, options=None):
@@ -113,10 +117,7 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
             clip_actions=True,
             env_config={
                 "triangle_size": triangle_size,
-                "action_space": Discrete(action_space_dim),
                 "max_iters": 200,
-                "render_mode": None,
-                "observation_space": Box(low=0, high=1, shape=(observation_space_dim,), dtype=np.int8),
             },
         )
         .rollouts(
