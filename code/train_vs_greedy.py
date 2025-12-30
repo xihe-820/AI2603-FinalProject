@@ -143,11 +143,11 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
         )
         .rollouts(
             num_rollout_workers=num_workers,  # 增加并行worker
-            num_envs_per_worker=2,            # 每个worker运行2个环境
+            num_envs_per_worker=4,            # 每个worker运行4个环境
             rollout_fragment_length="auto",
         )
         .training(
-            train_batch_size=4096,
+            train_batch_size=2048,            # 减小batch size加快迭代
             lr=5e-5,                          # 降低学习率，更稳定
             gamma=0.995,
             lambda_=0.95,
@@ -155,8 +155,8 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
             clip_param=0.2,
             grad_clip=0.5,
             vf_loss_coeff=0.5,
-            sgd_minibatch_size=512,
-            num_sgd_iter=10,
+            sgd_minibatch_size=256,           # 对应调整minibatch
+            num_sgd_iter=5,                   # 减少SGD迭代加快训练
             entropy_coeff=0.01,               # 增加熵，促进探索
             _enable_learner_api=True
         )
@@ -170,7 +170,7 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
 
 def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
     """评估策略对抗Greedy"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=60)
     greedy = GreedyPolicy(triangle_size)
     
     wins = 0
@@ -204,7 +204,7 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
 
 def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
     """评估策略对抗RL Baseline"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=60)
     
     wins = 0
     for i in range(num_trials):
@@ -286,7 +286,7 @@ def main(args):
     def env_creator_greedy(config):
         return SingleAgentVsOpponent(
             triangle_size=config.get("triangle_size", 2),
-            max_iters=config.get("max_iters", 200),
+            max_iters=config.get("max_iters", 60),
             opponent_type='greedy'
         )
     
@@ -294,7 +294,7 @@ def main(args):
     def env_creator_rl(config):
         return SingleAgentVsOpponent(
             triangle_size=config.get("triangle_size", 2),
-            max_iters=config.get("max_iters", 200),
+            max_iters=config.get("max_iters", 60),
             opponent_type='rl_baseline'
         )
 
