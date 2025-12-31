@@ -34,6 +34,8 @@ class SingleAgentVsOpponent(gym.Env):
         # 初始化对手
         if opponent_type == 'greedy':
             self.opponent = GreedyPolicy(triangle_size)
+        elif opponent_type == 'random':
+            self.opponent = None  # 随机对手
         elif opponent_type == 'rl_baseline':
             if rl_opponent_policy is None:
                 self.opponent = Policy.from_checkpoint("pretrained/policies/default_policy")
@@ -110,7 +112,13 @@ class SingleAgentVsOpponent(gym.Env):
             # 让对手走
             if self.env.agent_selection == self.env.possible_agents[1]:
                 opp_obs = obs
-                opp_action = self.opponent.compute_single_action(opp_obs)[0]
+                # 随机对手：随机选择合法动作
+                if self.opponent is None:
+                    action_mask = opp_obs["action_mask"]
+                    legal_actions = np.where(action_mask == 1)[0]
+                    opp_action = np.random.choice(legal_actions) if len(legal_actions) > 0 else 0
+                else:
+                    opp_action = self.opponent.compute_single_action(opp_obs)[0]
                 self.env.step(int(opp_action))
                 obs, opp_reward, terminated, truncated, info = self.env.last()
                 
@@ -255,6 +263,39 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20, verbose=False):
     return wins / num_trials
 
 
+def evaluate_vs_random(policy, triangle_size, num_trials=20):
+    """评估策略对抗随机对手"""
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
+    
+    wins = 0
+    for i in range(num_trials):
+        env.reset(seed=i)
+        for agent in env.agent_iter():
+            obs, reward, termination, truncation, info = env.last()
+            if termination or truncation:
+                break
+            
+            if agent == env.possible_agents[0]:
+                try:
+                    action = policy.compute_single_action(obs)[0]
+                except Exception as e:
+                    if isinstance(obs, dict) and "observation" in obs:
+                        action = policy.compute_single_action(obs["observation"])[0]
+                    else:
+                        raise e
+            else:
+                # 随机对手
+                action_mask = obs["action_mask"]
+                legal_actions = np.where(action_mask == 1)[0]
+                action = np.random.choice(legal_actions) if len(legal_actions) > 0 else 0
+            env.step(int(action))
+        
+        if env.unwrapped.winner == env.possible_agents[0]:
+            wins += 1
+    
+    return wins / num_trials
+
+
 def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
     """评估策略对抗RL Baseline"""
     env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
@@ -333,7 +374,15 @@ def train_vs_greedy_env(policy, greedy_policy, env, num_episodes=100):
 
 
 def main(args):
-    """主函数 - 两阶段训练"""
+    """主函数 - 三阶段训练"""
+    
+    # 阶段0环境：对抗随机（预训练）
+    def env_creator_random(config):
+        return SingleAgentVsOpponent(
+            triangle_size=config.get("triangle_size", 2),
+            max_iters=config.get("max_iters", 100),
+            opponent_type='random'
+        )
     
     # 阶段1环境：对抗Greedy
     def env_creator_greedy(config):
@@ -352,15 +401,15 @@ def main(args):
         )
 
     env_name = 'single_vs_opponent'
-    # 先注册Greedy环境
-    register_env(env_name, env_creator_greedy)
+    # 先注册Random环境（阶段0预训练）
+    register_env(env_name, env_creator_random)
 
     ray.init(num_cpus=args.num_cpus or None, local_mode=args.local_mode)
     
     config = create_config(env_name, args.triangle_size, args.num_workers)
     
     timestr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    logdir = f"logs/two_stage_{timestr}"
+    logdir = f"logs/three_stage_{timestr}"
     os.makedirs(logdir, exist_ok=True)
     
     algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
@@ -385,13 +434,15 @@ def main(args):
     # 加载RL Baseline用于评估
     rl_baseline = Policy.from_checkpoint("pretrained/policies/default_policy")
     
+    best_winrate_random = 0.0
     best_winrate_greedy = 0.0
     best_winrate_rl = 0.0
-    phase = 1  # 1=对抗Greedy, 2=对抗RL Baseline
+    phase = 0  # 0=对抗Random预训练, 1=对抗Greedy, 2=对抗RL Baseline
+    phase0_completed = False
     phase1_completed = False
     
     print("=" * 60)
-    print("阶段1: 对抗Greedy训练 (目标: 90%+)")
+    print("阶段0: 对抗Random预训练 (目标: 90%+)")
     print("=" * 60)
     
     for i in range(args.train_iters):
@@ -405,11 +456,16 @@ def main(args):
         if i % args.eval_period == 0:
             # 第一次评估加调试信息
             verbose = (i == 0)
+            winrate_random = evaluate_vs_random(policy, args.triangle_size, num_trials=10)
             winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=10, verbose=verbose)
             winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=10)
             
             print(f"[阶段{phase}] Iter {i}: reward={result['episode_reward_mean']:.1f}, "
-                  f"vs_Greedy={winrate_greedy*100:.0f}%, vs_RL={winrate_rl*100:.0f}%")
+                  f"vs_Random={winrate_random*100:.0f}%, vs_Greedy={winrate_greedy*100:.0f}%, vs_RL={winrate_rl*100:.0f}%")
+            
+            # 保存vs Random最好的模型
+            if winrate_random > best_winrate_random:
+                best_winrate_random = winrate_random
             
             # 保存vs Greedy最好的模型
             if winrate_greedy > best_winrate_greedy:
@@ -424,6 +480,33 @@ def main(args):
                 checkpoint_dir = f"{logdir}/best_vs_rl"
                 algo.save(checkpoint_dir=checkpoint_dir)
                 print(f"  -> 新最佳vs RL: {winrate_rl*100:.0f}%")
+            
+            # 检查是否达到阶段0目标（vs Random 90%+）
+            if phase == 0 and winrate_random >= 0.90 and not phase0_completed:
+                phase0_completed = True
+                print("\n" + "=" * 60)
+                print(f"🎉 阶段0完成! vs Random达到 {winrate_random*100:.0f}%")
+                print("现在切换到阶段1: 对抗Greedy (目标: 90%+)")
+                print("=" * 60 + "\n")
+                
+                # 保存当前权重
+                phase0_weights = policy.get_weights()
+                
+                # 停止当前算法
+                algo.stop()
+                
+                # 重新注册环境为Greedy
+                register_env(env_name, env_creator_greedy)
+                config = create_config(env_name, args.triangle_size, args.num_workers)
+                algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
+                
+                # 恢复权重
+                current_policy = algo.get_policy("default_policy")
+                current_policy.set_weights(phase0_weights)
+                algo.workers.sync_weights()
+                print("✅ 成功切换到阶段1!")
+                
+                phase = 1
             
             # 检查是否达到阶段1目标
             if phase == 1 and winrate_greedy >= 0.90 and not phase1_completed:
