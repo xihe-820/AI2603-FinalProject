@@ -243,17 +243,9 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20, verbose=False):
                 break
             step_count += 1
             
-            # 检查observation格式并处理
             if agent == env.possible_agents[0]:
-                # RL策略：可能需要处理dict格式
-                try:
-                    action = policy.compute_single_action(obs)[0]
-                except Exception as e:
-                    # 如果obs是dict，尝试展平
-                    if isinstance(obs, dict) and "observation" in obs:
-                        action = policy.compute_single_action(obs["observation"])[0]
-                    else:
-                        raise e
+                # RL策略：obs已经是dict格式，直接传入
+                action = policy.compute_single_action(obs)[0]
             else:
                 action = greedy.compute_single_action(obs)[0]
             env.step(int(action))
@@ -280,13 +272,8 @@ def evaluate_vs_random(policy, triangle_size, num_trials=20):
                 break
             
             if agent == env.possible_agents[0]:
-                try:
-                    action = policy.compute_single_action(obs)[0]
-                except Exception as e:
-                    if isinstance(obs, dict) and "observation" in obs:
-                        action = policy.compute_single_action(obs["observation"])[0]
-                    else:
-                        raise e
+                # RL策略：obs已经是dict格式，直接传入
+                action = policy.compute_single_action(obs)[0]
             else:
                 # 随机对手
                 action_mask = obs["action_mask"]
@@ -312,23 +299,12 @@ def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
             if termination or truncation:
                 break
             
-            # 检查observation格式并处理
             if agent == env.possible_agents[0]:
-                try:
-                    action = policy.compute_single_action(obs)[0]
-                except Exception as e:
-                    if isinstance(obs, dict) and "observation" in obs:
-                        action = policy.compute_single_action(obs["observation"])[0]
-                    else:
-                        raise e
+                # RL策略：obs已经是dict格式，直接传入
+                action = policy.compute_single_action(obs)[0]
             else:
-                try:
-                    action = rl_baseline.compute_single_action(obs)[0]
-                except Exception as e:
-                    if isinstance(obs, dict) and "observation" in obs:
-                        action = rl_baseline.compute_single_action(obs["observation"])[0]
-                    else:
-                        raise e
+                # RL Baseline
+                action = rl_baseline.compute_single_action(obs)[0]
             env.step(int(action))
         
         if env.unwrapped.winner == env.possible_agents[0]:
