@@ -91,18 +91,18 @@ class SingleAgentVsOpponent(gym.Env):
         
         # 计算中间奖励：棋子向目标区域的移动
         new_progress = self._compute_progress_from_obs(obs)
-        progress_reward = (new_progress - old_progress) * 10  # 进步奖励
+        progress_reward = (new_progress - old_progress) * 1  # 降低系数，让胜负更重要
         
         # 如果游戏结束，检查谁赢了
         if done:
             winner = self.env.unwrapped.winner
             if winner == my_agent:
-                reward = 1000
+                reward = 1000 + progress_reward  # 赢了+当步进度
             elif winner is None:
                 # 平局/超时
-                reward = -100
+                reward = -500 + progress_reward
             else:
-                reward = -1000
+                reward = -1000 + progress_reward  # 输了+当步进度
         else:
             # 游戏未结束，给中间奖励
             reward = progress_reward
@@ -120,7 +120,7 @@ class SingleAgentVsOpponent(gym.Env):
                     if winner == my_agent:
                         reward = 1000
                     elif winner is None:
-                        reward = -100
+                        reward = -500
                     else:
                         reward = -1000
         
@@ -216,7 +216,7 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
     return config
 
 
-def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
+def evaluate_vs_greedy(policy, triangle_size, num_trials=20, verbose=False):
     """评估策略对抗Greedy"""
     env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
     greedy = GreedyPolicy(triangle_size)
@@ -224,10 +224,12 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
     wins = 0
     for i in range(num_trials):
         env.reset(seed=i)
+        step_count = 0
         for agent in env.agent_iter():
             obs, reward, termination, truncation, info = env.last()
             if termination or truncation:
                 break
+            step_count += 1
             
             # 检查observation格式并处理
             if agent == env.possible_agents[0]:
@@ -244,7 +246,10 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
                 action = greedy.compute_single_action(obs)[0]
             env.step(int(action))
         
-        if env.unwrapped.winner == env.possible_agents[0]:
+        winner = env.unwrapped.winner
+        if verbose and i == 0:
+            print(f"  [Debug] Game {i}: steps={step_count}, winner={winner}, possible_agents={env.possible_agents}")
+        if winner == env.possible_agents[0]:
             wins += 1
     
     return wins / num_trials
@@ -398,7 +403,9 @@ def main(args):
         
         # 每N次评估一下
         if i % args.eval_period == 0:
-            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=10)
+            # 第一次评估加调试信息
+            verbose = (i == 0)
+            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=10, verbose=verbose)
             winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=10)
             
             print(f"[阶段{phase}] Iter {i}: reward={result['episode_reward_mean']:.1f}, "
