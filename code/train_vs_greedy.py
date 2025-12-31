@@ -415,23 +415,32 @@ def main(args):
         try:
             restored_policy = Policy.from_checkpoint("pretrained/policies/default_policy")
             current_policy = algo.get_policy("default_policy")
-            current_policy.set_weights(restored_policy.get_weights())
-            weights_to_sync = {"default_policy": restored_policy.get_weights()}
-            algo.workers.foreach_worker(lambda w: w.set_weights(weights_to_sync))
+            restored_weights = restored_policy.get_weights()
+            current_policy.set_weights(restored_weights)
+            
+            # 同步到所有worker - 使用正确的方法
+            algo.workers.sync_weights(policies=["default_policy"])
+            
             print("成功从pretrained加载权重!")
             
-            # 立即验证：测试pretrained的真实能力
-            print("验证pretrained权重...")
-            test_winrate = evaluate_vs_random(restored_policy, args.triangle_size, num_trials=10)
-            print(f"  pretrained vs Random: {test_winrate*100:.0f}%")
-            test_winrate_greedy = evaluate_vs_greedy(restored_policy, args.triangle_size, num_trials=10)
-            print(f"  pretrained vs Greedy: {test_winrate_greedy*100:.0f}%")
+            # 验证：测试algo中的policy（不是restored_policy）
+            print("验证权重同步...")
+            algo_policy = algo.get_policy("default_policy")
+            test_winrate = evaluate_vs_random(algo_policy, args.triangle_size, num_trials=10)
+            print(f"  algo policy vs Random: {test_winrate*100:.0f}%")
+            test_winrate_greedy = evaluate_vs_greedy(algo_policy, args.triangle_size, num_trials=10)
+            print(f"  algo policy vs Greedy: {test_winrate_greedy*100:.0f}%")
+            
+            if test_winrate_greedy < 0.5:
+                print("警告: 权重可能未正确同步到worker!")
             
             # 跳过阶段0
             phase0_completed = True
             phase = 1  # 直接进入阶段1
         except Exception as e:
             print(f"无法从pretrained加载权重: {e}")
+            import traceback
+            traceback.print_exc()
             print("将从阶段0开始训练...")
     
     greedy = GreedyPolicy(args.triangle_size)
