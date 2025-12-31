@@ -401,8 +401,18 @@ def main(args):
         )
 
     env_name = 'single_vs_opponent'
-    # 先注册Random环境（阶段0预训练）
-    register_env(env_name, env_creator_random)
+    
+    # 根据是否从pretrained开始，选择初始环境
+    if args.start_from_pretrained:
+        # 从pretrained开始，直接注册Greedy环境（阶段1）
+        register_env(env_name, env_creator_greedy)
+        phase = 1
+        phase0_completed = True
+    else:
+        # 从头开始，注册Random环境（阶段0）
+        register_env(env_name, env_creator_random)
+        phase = 0
+        phase0_completed = False
 
     ray.init(num_cpus=args.num_cpus or None, local_mode=args.local_mode)
     
@@ -423,11 +433,28 @@ def main(args):
             current_policy = algo.get_policy("default_policy")
             current_policy.set_weights(restored_policy.get_weights())
             # 同步权重到所有worker
-            algo.workers.sync_weights()
+            weights_to_sync = {"default_policy": restored_policy.get_weights()}
+            algo.workers.foreach_worker(lambda w: w.set_weights(weights_to_sync))
             print("成功恢复权重并同步到所有worker!")
         except Exception as e:
             print(f"无法从checkpoint恢复权重: {e}")
             print("将从头开始训练...")
+    elif args.start_from_pretrained:
+        # 从pretrained RL Baseline开始，跳过阶段0
+        print("从pretrained RL Baseline开始训练...")
+        try:
+            restored_policy = Policy.from_checkpoint("pretrained/policies/default_policy")
+            current_policy = algo.get_policy("default_policy")
+            current_policy.set_weights(restored_policy.get_weights())
+            weights_to_sync = {"default_policy": restored_policy.get_weights()}
+            algo.workers.foreach_worker(lambda w: w.set_weights(weights_to_sync))
+            print("成功从pretrained加载权重!")
+            # 跳过阶段0
+            phase0_completed = True
+            phase = 1  # 直接进入阶段1
+        except Exception as e:
+            print(f"无法从pretrained加载权重: {e}")
+            print("将从阶段0开始训练...")
     
     greedy = GreedyPolicy(args.triangle_size)
     
@@ -437,13 +464,17 @@ def main(args):
     best_winrate_random = 0.0
     best_winrate_greedy = 0.0
     best_winrate_rl = 0.0
-    phase = 0  # 0=对抗Random预训练, 1=对抗Greedy, 2=对抗RL Baseline
-    phase0_completed = False
+    # phase和phase0_completed已在上面根据args.start_from_pretrained设置
     phase1_completed = False
     
-    print("=" * 60)
-    print("阶段0: 对抗Random预训练 (目标: 90%+)")
-    print("=" * 60)
+    if phase == 0:
+        print("=" * 60)
+        print("阶段0: 对抗Random预训练 (目标: 90%+)")
+        print("=" * 60)
+    else:
+        print("=" * 60)
+        print("阶段1: 对抗Greedy训练 (目标: 90%+) - 从pretrained开始")
+        print("=" * 60)
     
     for i in range(args.train_iters):
         # 训练一次迭代
@@ -489,8 +520,10 @@ def main(args):
                 print("现在切换到阶段1: 对抗Greedy (目标: 90%+)")
                 print("=" * 60 + "\n")
                 
-                # 保存当前权重
-                phase0_weights = policy.get_weights()
+                # 保存checkpoint到文件（更可靠）
+                phase0_checkpoint = f"{logdir}/phase0_completed"
+                algo.save(checkpoint_dir=phase0_checkpoint)
+                print(f"已保存阶段0 checkpoint到: {phase0_checkpoint}")
                 
                 # 停止当前算法
                 algo.stop()
@@ -500,11 +533,29 @@ def main(args):
                 config = create_config(env_name, args.triangle_size, args.num_workers)
                 algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
                 
-                # 恢复权重
+                # 从checkpoint恢复权重
+                policy_path = os.path.join(phase0_checkpoint, "policies", "default_policy")
+                print(f"从checkpoint加载权重: {policy_path}")
+                restored_policy = Policy.from_checkpoint(policy_path)
+                restored_weights = restored_policy.get_weights()
+                
                 current_policy = algo.get_policy("default_policy")
-                current_policy.set_weights(phase0_weights)
-                algo.workers.sync_weights()
-                print("✅ 成功切换到阶段1!")
+                current_policy.set_weights(restored_weights)
+                
+                # 同步到所有worker
+                weights_to_sync = {"default_policy": restored_weights}
+                algo.workers.foreach_worker(
+                    lambda w: w.set_weights(weights_to_sync)
+                )
+                
+                # 验证权重是否正确加载
+                verify_winrate = evaluate_vs_random(current_policy, args.triangle_size, num_trials=10)
+                print(f"验证: vs Random = {verify_winrate*100:.0f}% (应该接近 {winrate_random*100:.0f}%)")
+                
+                if verify_winrate < 0.80:
+                    print("⚠️ 警告: 权重可能未正确加载!")
+                else:
+                    print("✅ 成功切换到阶段1!")
                 
                 phase = 1
             
@@ -609,6 +660,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=8, help='并行采样worker数量')
     parser.add_argument('--eval_period', type=int, default=20, help='评估间隔')
     parser.add_argument('--restore_from', type=str, default=None, help='从checkpoint恢复训练')
+    parser.add_argument('--start_from_pretrained', action='store_true', help='从pretrained RL Baseline开始，跳过阶段0')
     parser.add_argument('--local_mode', action='store_true')
     args = parser.parse_args()
     main(args)
