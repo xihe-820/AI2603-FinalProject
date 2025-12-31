@@ -76,41 +76,89 @@ class SingleAgentVsOpponent(gym.Env):
     
     def step(self, action):
         """执行动作"""
+        # 记录走之前的状态
+        my_agent = self.env.possible_agents[0]  # player_0
+        
+        # 获取当前观测，计算走之前的进度
+        old_obs, _, _, _, _ = self.env.last()
+        old_progress = self._compute_progress_from_obs(old_obs)
+        
         # 学习agent走一步
         self.env.step(int(action))
-        obs, reward, terminated, truncated, info = self.env.last()
+        obs, env_reward, terminated, truncated, info = self.env.last()
         
         done = terminated or truncated
         
+        # 计算中间奖励：棋子向目标区域的移动
+        new_progress = self._compute_progress_from_obs(obs)
+        progress_reward = (new_progress - old_progress) * 10  # 进步奖励
+        
         # 如果游戏结束，检查谁赢了
         if done:
-            # agent刚走完游戏就结束，检查是否agent赢了
             winner = self.env.unwrapped.winner
-            if winner == self.env.possible_agents[0]:
-                # Agent是player_0，赢了
+            if winner == my_agent:
                 reward = 1000
+            elif winner is None:
+                # 平局/超时
+                reward = -100
             else:
-                # Agent输了
                 reward = -1000
-        # 如果游戏没结束，让对手走
-        elif self.env.agent_selection == self.env.possible_agents[1]:
-            opp_obs = obs
-            opp_action = self.opponent.compute_single_action(opp_obs)[0]
-            self.env.step(int(opp_action))
-            obs, opp_reward, terminated, truncated, info = self.env.last()
+        else:
+            # 游戏未结束，给中间奖励
+            reward = progress_reward
             
-            done = terminated or truncated
-            # 如果对手走完后游戏结束，检查谁赢了
-            if done:
-                winner = self.env.unwrapped.winner
-                if winner == self.env.possible_agents[0]:
-                    reward = 1000
-                else:
-                    reward = -1000
-            else:
-                reward = 0
+            # 让对手走
+            if self.env.agent_selection == self.env.possible_agents[1]:
+                opp_obs = obs
+                opp_action = self.opponent.compute_single_action(opp_obs)[0]
+                self.env.step(int(opp_action))
+                obs, opp_reward, terminated, truncated, info = self.env.last()
+                
+                done = terminated or truncated
+                if done:
+                    winner = self.env.unwrapped.winner
+                    if winner == my_agent:
+                        reward = 1000
+                    elif winner is None:
+                        reward = -100
+                    else:
+                        reward = -1000
         
         return obs, reward, done, done, info
+    
+    def _compute_progress_from_obs(self, obs):
+        """从observation计算棋子向目标区域的进度（越大越好）"""
+        n = self.triangle_size
+        board_size = 4 * n + 1
+        
+        # 解析observation获取棋子位置
+        if isinstance(obs, dict):
+            observation = obs["observation"].reshape(board_size, board_size, 4)
+        else:
+            observation = obs.reshape(board_size, board_size, 4)
+        
+        # 目标区域位置（与agents.py中MinimaxPolicy一致）
+        target_positions = set()
+        for i in range(n):
+            for j in range(0, n - i):
+                q = -n + j
+                r = n + 1 + i
+                target_positions.add((q, r))
+        
+        total_progress = 0
+        # 通道0是当前玩家（player_0）的棋子
+        for qi in range(board_size):
+            for ri in range(board_size):
+                if observation[qi, ri, 0] == 1:  # 我的棋子
+                    q = qi - 2 * n
+                    r = ri - 2 * n
+                    
+                    # 计算到目标区域的最小距离的负值（越近越大）
+                    if target_positions:
+                        min_dist = min(abs(q - t[0]) + abs(r - t[1]) for t in target_positions)
+                        total_progress -= min_dist
+        
+        return total_progress
 
 
 def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
@@ -170,7 +218,7 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
 
 def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
     """评估策略对抗Greedy"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=60)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
     greedy = GreedyPolicy(triangle_size)
     
     wins = 0
@@ -204,7 +252,7 @@ def evaluate_vs_greedy(policy, triangle_size, num_trials=20):
 
 def evaluate_vs_rl_baseline(policy, rl_baseline, triangle_size, num_trials=20):
     """评估策略对抗RL Baseline"""
-    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=60)
+    env = chinese_checker_v0.env(render_mode=None, triangle_size=triangle_size, max_iters=100)
     
     wins = 0
     for i in range(num_trials):
@@ -286,7 +334,7 @@ def main(args):
     def env_creator_greedy(config):
         return SingleAgentVsOpponent(
             triangle_size=config.get("triangle_size", 2),
-            max_iters=config.get("max_iters", 60),
+            max_iters=config.get("max_iters", 100),
             opponent_type='greedy'
         )
     
@@ -294,7 +342,7 @@ def main(args):
     def env_creator_rl(config):
         return SingleAgentVsOpponent(
             triangle_size=config.get("triangle_size", 2),
-            max_iters=config.get("max_iters", 60),
+            max_iters=config.get("max_iters", 100),
             opponent_type='rl_baseline'
         )
 
@@ -457,7 +505,7 @@ def main(args):
     print(f"训练完成!")
     print(f"最终 vs Greedy: {final_greedy*100:.1f}%")
     print(f"最终 vs RL Baseline: {final_rl*100:.1f}%")
-    print(f"最佳 vs RL: {best_rl_winrate*100:.1f}%")
+    print(f"最佳 vs RL: {best_winrate_rl*100:.1f}%")
     print(f"模型保存在: {logdir}")
     
     ray.shutdown()
