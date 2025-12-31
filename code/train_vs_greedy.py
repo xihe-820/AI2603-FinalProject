@@ -519,9 +519,10 @@ def main(args):
         if i % args.eval_period == 0:
             # 第一次评估加调试信息
             verbose = (i == 0)
-            winrate_random = evaluate_vs_random(policy, args.triangle_size, num_trials=10)
-            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=10, verbose=verbose)
-            winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=10)
+            # 增加评估次数减少波动
+            winrate_random = evaluate_vs_random(policy, args.triangle_size, num_trials=20)
+            winrate_greedy = evaluate_vs_greedy(policy, args.triangle_size, num_trials=20, verbose=verbose)
+            winrate_rl = evaluate_vs_rl_baseline(policy, rl_baseline, args.triangle_size, num_trials=20)
             
             print(f"[阶段{phase}] Iter {i}: reward={result['episode_reward_mean']:.1f}, "
                   f"vs_Random={winrate_random*100:.0f}%, vs_Greedy={winrate_greedy*100:.0f}%, vs_RL={winrate_rl*100:.0f}%")
@@ -677,13 +678,18 @@ def main(args):
                 phase = 2
                 print("开始阶段2训练...")
             
-            # 检查是否达到最终目标
-            # 检查是否两个目标都达成
-            if winrate_greedy >= 0.90 and winrate_rl >= 0.90:
-                print("\n" + "=" * 60)
-                print(f"🎊 训练完成! vs Greedy={winrate_greedy*100:.0f}%, vs RL={winrate_rl*100:.0f}%")
-                print("=" * 60)
-                break
+            # 检查是否达到最终目标 - 需要连续3次达到95%+
+            if winrate_greedy >= 0.95 and winrate_rl >= 0.95:
+                consecutive_wins = getattr(main, 'consecutive_wins', 0) + 1
+                main.consecutive_wins = consecutive_wins
+                print(f"  ★ 达标! 连续{consecutive_wins}/3次")
+                if consecutive_wins >= 3:
+                    print("\n" + "=" * 60)
+                    print(f"🎊 训练完成! vs Greedy={winrate_greedy*100:.0f}%, vs RL={winrate_rl*100:.0f}%")
+                    print("=" * 60)
+                    break
+            else:
+                main.consecutive_wins = 0
         
         # 定期保存
         if i % 50 == 0:
