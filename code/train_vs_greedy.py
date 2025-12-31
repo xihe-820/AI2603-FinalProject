@@ -428,6 +428,15 @@ def main(args):
                 worker.set_weights({"default_policy": restored_weights})
             algo.workers.foreach_worker(set_weights_fn, local_worker=False)
             
+            # ★ 关键：同步到Learner模块 ★
+            # 新RLlib API中，Learner有独立的权重副本
+            if hasattr(algo, 'learner_group') and algo.learner_group is not None:
+                # 获取RLModule的state dict格式
+                rl_module = current_policy.model
+                learner_weights = {"default_policy": rl_module.state_dict()}
+                algo.learner_group.set_weights(learner_weights)
+                print("已同步权重到Learner模块!")
+            
             print("成功从pretrained加载权重!")
             
             # 验证local worker的policy
