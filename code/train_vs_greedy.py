@@ -78,37 +78,25 @@ class SingleAgentVsOpponent(gym.Env):
     
     def step(self, action):
         """执行动作"""
-        # 记录走之前的状态
         my_agent = self.env.possible_agents[0]  # player_0
-        
-        # 获取当前观测，计算走之前的进度
-        old_obs, _, _, _, _ = self.env.last()
-        old_progress = self._compute_progress_from_obs(old_obs)
         
         # 学习agent走一步
         self.env.step(int(action))
         obs, env_reward, terminated, truncated, info = self.env.last()
         
         done = terminated or truncated
-        
-        # 计算中间奖励：棋子向目标区域的移动
-        new_progress = self._compute_progress_from_obs(obs)
-        progress_reward = (new_progress - old_progress) * 1  # 降低系数，让胜负更重要
+        reward = 0  # 默认没有奖励
         
         # 如果游戏结束，检查谁赢了
         if done:
             winner = self.env.unwrapped.winner
             if winner == my_agent:
-                reward = 1000 + progress_reward  # 赢了+当步进度
+                reward = 100  # 赢了
             elif winner is None:
-                # 平局/超时
-                reward = -500 + progress_reward
+                reward = -10  # 平局/超时
             else:
-                reward = -1000 + progress_reward  # 输了+当步进度
+                reward = -100  # 输了
         else:
-            # 游戏未结束，给中间奖励
-            reward = progress_reward
-            
             # 让对手走
             if self.env.agent_selection == self.env.possible_agents[1]:
                 opp_obs = obs
@@ -126,11 +114,11 @@ class SingleAgentVsOpponent(gym.Env):
                 if done:
                     winner = self.env.unwrapped.winner
                     if winner == my_agent:
-                        reward = 1000
+                        reward = 100
                     elif winner is None:
-                        reward = -500
+                        reward = -10
                     else:
-                        reward = -1000
+                        reward = -100
         
         return obs, reward, done, done, info
     
@@ -431,6 +419,14 @@ def main(args):
             weights_to_sync = {"default_policy": restored_policy.get_weights()}
             algo.workers.foreach_worker(lambda w: w.set_weights(weights_to_sync))
             print("成功从pretrained加载权重!")
+            
+            # 立即验证：用restored_policy直接测试vs Random
+            print("验证pretrained权重...")
+            test_winrate = evaluate_vs_random(restored_policy, args.triangle_size, num_trials=10)
+            print(f"  pretrained policy vs Random: {test_winrate*100:.0f}%")
+            test_winrate2 = evaluate_vs_random(current_policy, args.triangle_size, num_trials=10)
+            print(f"  loaded policy vs Random: {test_winrate2*100:.0f}%")
+            
             # 跳过阶段0
             phase0_completed = True
             phase = 1  # 直接进入阶段1
