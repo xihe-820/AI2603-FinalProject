@@ -196,16 +196,16 @@ def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8, u
         )
         .training(
             train_batch_size=2048,            # 减小batch size加快迭代
-            lr=5e-5,                          # 降低学习率，更稳定
+            lr=1e-5,                          # 更低学习率，防止破坏预训练权重
             gamma=0.995,
             lambda_=0.95,
             use_gae=True,
-            clip_param=0.2,
+            clip_param=0.1,                   # 更小的clip，更保守更新
             grad_clip=0.5,
             vf_loss_coeff=0.5,
             sgd_minibatch_size=256,           # 对应调整minibatch
-            num_sgd_iter=5,                   # 减少SGD迭代加快训练
-            entropy_coeff=0.01,               # 增加熵，促进探索
+            num_sgd_iter=3,                   # 更少SGD迭代
+            entropy_coeff=0.005,              # 降低熵，更确定性
             _enable_learner_api=True
         )
         .experimental(_disable_preprocessor_api=True)
@@ -420,12 +420,12 @@ def main(args):
             algo.workers.foreach_worker(lambda w: w.set_weights(weights_to_sync))
             print("成功从pretrained加载权重!")
             
-            # 立即验证：用restored_policy直接测试vs Random
+            # 立即验证：测试pretrained的真实能力
             print("验证pretrained权重...")
             test_winrate = evaluate_vs_random(restored_policy, args.triangle_size, num_trials=10)
-            print(f"  pretrained policy vs Random: {test_winrate*100:.0f}%")
-            test_winrate2 = evaluate_vs_random(current_policy, args.triangle_size, num_trials=10)
-            print(f"  loaded policy vs Random: {test_winrate2*100:.0f}%")
+            print(f"  pretrained vs Random: {test_winrate*100:.0f}%")
+            test_winrate_greedy = evaluate_vs_greedy(restored_policy, args.triangle_size, num_trials=10)
+            print(f"  pretrained vs Greedy: {test_winrate_greedy*100:.0f}%")
             
             # 跳过阶段0
             phase0_completed = True
