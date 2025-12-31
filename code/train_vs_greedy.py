@@ -169,10 +169,14 @@ class SingleAgentVsOpponent(gym.Env):
         return total_progress
 
 
-def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8):
+def create_config(env_name: str, triangle_size: int = 4, num_workers: int = 8, use_large_network: bool = False):
     """创建PPO配置"""
     rlm_class = TorchActionMaskRLM
-    model_config = {"fcnet_hiddens": [512, 512, 256]}  # 更大的网络
+    # 如果要从pretrained加载，必须用相同的网络结构 [256, 128]
+    if use_large_network:
+        model_config = {"fcnet_hiddens": [512, 512, 256]}  # 更大的网络
+    else:
+        model_config = {"fcnet_hiddens": [256, 128]}  # 与pretrained一致
     rlm_spec = SingleAgentRLModuleSpec(module_class=rlm_class, model_config_dict=model_config)
 
     action_space_dim = (4 * triangle_size + 1) ** 2 * 6 * 2 + 1
@@ -416,7 +420,9 @@ def main(args):
 
     ray.init(num_cpus=args.num_cpus or None, local_mode=args.local_mode)
     
-    config = create_config(env_name, args.triangle_size, args.num_workers)
+    # 如果从pretrained开始，用小网络；否则用大网络
+    use_large = not args.start_from_pretrained
+    config = create_config(env_name, args.triangle_size, args.num_workers, use_large_network=use_large)
     
     timestr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     logdir = f"logs/three_stage_{timestr}"
@@ -530,7 +536,7 @@ def main(args):
                 
                 # 重新注册环境为Greedy
                 register_env(env_name, env_creator_greedy)
-                config = create_config(env_name, args.triangle_size, args.num_workers)
+                config = create_config(env_name, args.triangle_size, args.num_workers, use_large_network=use_large)
                 algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
                 
                 # 从checkpoint恢复权重
@@ -600,7 +606,7 @@ def main(args):
                 # 5. 重新注册环境为RL Baseline
                 print("重新注册环境为对抗RL Baseline...")
                 register_env(env_name, env_creator_rl)
-                config = create_config(env_name, args.triangle_size, args.num_workers)
+                config = create_config(env_name, args.triangle_size, args.num_workers, use_large_network=use_large)
                 algo = config.build(logger_creator=custom_log_creator(os.path.join(os.curdir, logdir), ''))
                 
                 # 6. 设置权重并同步
