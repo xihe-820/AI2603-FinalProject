@@ -581,12 +581,11 @@ def main(args):
                 algo.workers.foreach_worker(set_weights_fn, local_worker=False)
                 
                 # 同步到Learner模块（关键！）
-                learner_group = algo.learner_group
-                def update_learner_weights(learner):
-                    learner._module["default_policy"].load_state_dict(
-                        current_policy.model.state_dict()
-                    )
-                learner_group.foreach_learner(update_learner_weights)
+                if hasattr(algo, 'learner_group') and algo.learner_group is not None:
+                    rl_module = current_policy.model
+                    learner_weights = {"default_policy": rl_module.state_dict()}
+                    algo.learner_group.set_weights(learner_weights)
+                    print("已同步权重到Learner模块!")
                 
                 # 验证权重是否正确加载
                 verify_winrate = evaluate_vs_random(current_policy, args.triangle_size, num_trials=10)
@@ -656,12 +655,11 @@ def main(args):
                     algo.workers.foreach_worker(set_weights_fn, local_worker=False)
                     
                     # 同步到Learner模块（关键！）
-                    learner_group = algo.learner_group
-                    def update_learner_weights(learner):
-                        learner._module["default_policy"].load_state_dict(
-                            current_policy.model.state_dict()
-                        )
-                    learner_group.foreach_learner(update_learner_weights)
+                    if hasattr(algo, 'learner_group') and algo.learner_group is not None:
+                        rl_module = current_policy.model
+                        learner_weights = {"default_policy": rl_module.state_dict()}
+                        algo.learner_group.set_weights(learner_weights)
+                        print("已同步权重到Learner模块!")
                     
                     print("✅ 成功加载阶段1权重并同步到所有worker和Learner!")
                     
