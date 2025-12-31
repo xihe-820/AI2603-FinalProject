@@ -483,12 +483,28 @@ def main(args):
         print("阶段1: 对抗Greedy训练 (目标: 90%+) - 从pretrained开始")
         print("=" * 60)
     
+    # 保存训练前的权重用于对比
+    if args.start_from_pretrained:
+        pre_train_weights = algo.get_policy("default_policy").get_weights()
+        first_key = list(pre_train_weights.keys())[0]
+        pre_train_sample = pre_train_weights[first_key].copy()
+    
     for i in range(args.train_iters):
         # 训练一次迭代
         result = algo.train()
         
         # 获取策略
         policy = algo.get_policy("default_policy")
+        
+        # 第一次迭代：检查权重变化
+        if i == 0 and args.start_from_pretrained:
+            post_train_weights = policy.get_weights()
+            post_train_sample = post_train_weights[first_key]
+            weight_diff = np.abs(post_train_sample - pre_train_sample).mean()
+            weight_max_diff = np.abs(post_train_sample - pre_train_sample).max()
+            print(f"[权重变化诊断] mean_diff={weight_diff:.6f}, max_diff={weight_max_diff:.6f}")
+            print(f"  原始权重范围: [{pre_train_sample.min():.4f}, {pre_train_sample.max():.4f}]")
+            print(f"  训练后权重范围: [{post_train_sample.min():.4f}, {post_train_sample.max():.4f}]")
         
         # 每N次评估一下
         if i % args.eval_period == 0:
