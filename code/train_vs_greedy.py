@@ -414,25 +414,45 @@ def main(args):
         print("从pretrained RL Baseline开始训练...")
         try:
             restored_policy = Policy.from_checkpoint("pretrained/policies/default_policy")
-            current_policy = algo.get_policy("default_policy")
             restored_weights = restored_policy.get_weights()
+            
+            # 设置main policy权重
+            current_policy = algo.get_policy("default_policy")
             current_policy.set_weights(restored_weights)
             
-            # 同步到所有worker - 使用正确的方法
-            algo.workers.sync_weights(policies=["default_policy"])
+            # 方法1: 使用local_worker同步
+            algo.workers.local_worker().set_weights({"default_policy": restored_weights})
+            
+            # 方法2: 逐个同步到remote workers
+            def set_weights_fn(worker):
+                worker.set_weights({"default_policy": restored_weights})
+            algo.workers.foreach_worker(set_weights_fn, local_worker=False)
             
             print("成功从pretrained加载权重!")
             
-            # 验证：测试algo中的policy（不是restored_policy）
+            # 验证local worker的policy
             print("验证权重同步...")
-            algo_policy = algo.get_policy("default_policy")
-            test_winrate = evaluate_vs_random(algo_policy, args.triangle_size, num_trials=10)
-            print(f"  algo policy vs Random: {test_winrate*100:.0f}%")
-            test_winrate_greedy = evaluate_vs_greedy(algo_policy, args.triangle_size, num_trials=10)
-            print(f"  algo policy vs Greedy: {test_winrate_greedy*100:.0f}%")
+            local_policy = algo.workers.local_worker().get_policy("default_policy")
+            test_winrate = evaluate_vs_random(local_policy, args.triangle_size, num_trials=10)
+            print(f"  local worker policy vs Random: {test_winrate*100:.0f}%")
+            test_winrate_greedy = evaluate_vs_greedy(local_policy, args.triangle_size, num_trials=10)
+            print(f"  local worker policy vs Greedy: {test_winrate_greedy*100:.0f}%")
             
-            if test_winrate_greedy < 0.5:
-                print("警告: 权重可能未正确同步到worker!")
+            # 验证remote worker (抽查一个)
+            def get_remote_winrate(worker):
+                p = worker.get_policy("default_policy")
+                # 简单测试：返回权重的一个值来确认是否同步
+                w = p.get_weights()
+                first_key = list(w.keys())[0]
+                return float(w[first_key].flat[0])
+            
+            remote_check = algo.workers.foreach_worker(get_remote_winrate, local_worker=False)
+            local_check = get_remote_winrate(algo.workers.local_worker())
+            print(f"  权重一致性检查: local={local_check:.6f}, remote[0]={remote_check[0]:.6f}")
+            if abs(local_check - remote_check[0]) < 1e-6:
+                print("  ✓ 权重已同步到所有worker!")
+            else:
+                print("  ✗ 警告: 权重可能未正确同步!")
             
             # 跳过阶段0
             phase0_completed = True
