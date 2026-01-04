@@ -211,7 +211,12 @@ class GreedyPolicy(Policy):
 class MinimaxPolicy(Policy):
     """
     带Alpha-Beta剪枝的Minimax策略
-    使用启发式评估函数，基于移动方向和跳跃来评分
+    
+    优化特性:
+    1. 基于棋子位置的评估函数（考虑到目标区域的距离）
+    2. 跳跃链识别与奖励
+    3. 移动排序优化剪枝效率
+    4. 位置势能评估
     """
     def __init__(self, triangle_size=4, config={}, max_depth=3):
         observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
@@ -221,47 +226,144 @@ class MinimaxPolicy(Policy):
         self.action_space_dim = action_space.n
         self.n = triangle_size
         self.max_depth = max_depth
+        self.board_size = 4 * triangle_size + 1
+        
+        # 预计算目标区域（对于player_0，目标在下方）
+        self._precompute_target_region()
+    
+    def _precompute_target_region(self):
+        """预计算目标区域的位置，用于评估棋子位置"""
+        n = self.n
+        self.target_positions = set()
+        # player_0的目标区域在下方（正r方向）
+        for q in range(-n, 1):
+            for r in range(n, 2*n + 1):
+                if q + r >= n and q + r <= 2*n:
+                    self.target_positions.add((q, r))
+        
+        # 计算每个位置到目标区域中心的距离权重
+        self.position_scores = {}
+        target_center_r = 1.5 * n  # 目标区域中心大约在r=1.5n
+        for q in range(-2*n, 2*n + 1):
+            for r in range(-2*n, 2*n + 1):
+                # 越靠近目标区域（r越大），分数越高
+                # 使用简单的线性评估
+                self.position_scores[(q, r)] = r * 10  # r越大越好
+
+    def _get_piece_positions(self, obs):
+        """从观察中提取当前玩家的棋子位置"""
+        observation = obs["observation"].reshape(self.board_size, self.board_size, 4)
+        positions = []
+        for i in range(self.board_size):
+            for j in range(self.board_size):
+                if observation[i, j, 0] == 1:  # 通道0是当前玩家的棋子
+                    q = i - 2 * self.n
+                    r = j - 2 * self.n
+                    positions.append((q, r))
+        return positions
 
     def _has_jump_in_progress(self, obs):
         """检查是否有跳跃正在进行中"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
+        observation = obs["observation"].reshape(self.board_size, self.board_size, 4)
         return np.any(observation[:, :, 2] == 1)
+    
+    def _get_jump_piece_position(self, obs):
+        """获取正在跳跃的棋子位置"""
+        observation = obs["observation"].reshape(self.board_size, self.board_size, 4)
+        for i in range(self.board_size):
+            for j in range(self.board_size):
+                if observation[i, j, 2] == 1:  # 通道2是跳跃起始位置
+                    return (i - 2 * self.n, j - 2 * self.n)
+        return None
 
-    def _evaluate_move(self, move, has_jump, num_legal_moves):
+    def _evaluate_board_state(self, obs):
+        """
+        评估整个棋盘状态
+        基于所有棋子到目标区域的总距离
+        """
+        positions = self._get_piece_positions(obs)
+        total_score = 0
+        for q, r in positions:
+            # 位置分数：r越大（越靠近目标）越好
+            total_score += self.position_scores.get((q, r), 0)
+            # 额外奖励：已经在目标区域的棋子
+            if (q, r) in self.target_positions:
+                total_score += 50
+        return total_score
+
+    def _evaluate_move(self, move, obs, has_jump, num_legal_moves):
         """
         评估单个移动的得分
-        基于移动方向和类型来评分
+        综合考虑：移动方向、跳跃、位置变化
         """
         if move == Move.END_TURN:
+            # 如果还有跳跃可以继续，结束回合是差的选择
             if has_jump and num_legal_moves > 1:
-                return -100
-            return -5
+                return -200
+            # 正常结束回合
+            return -10
         
         score = 0.0
+        q, r = move.position.q, move.position.r
         
-        # 方向评估 - 核心启发式
+        # 计算移动后的新位置
+        dq, dr = DIRECTION_DELTAS[move.direction]
+        if move.is_jump:
+            new_q, new_r = q + 2*dq, r + 2*dr
+        else:
+            new_q, new_r = q + dq, r + dr
+        
+        # 1. 位置改进分数（新位置vs旧位置）
+        old_pos_score = self.position_scores.get((q, r), 0)
+        new_pos_score = self.position_scores.get((new_q, new_r), 0)
+        position_improvement = new_pos_score - old_pos_score
+        score += position_improvement * 2
+        
+        # 2. 方向奖励/惩罚
         if move.direction == Direction.DownLeft:
-            score += 20
+            score += 30
         elif move.direction == Direction.DownRight:
-            score += 20
+            score += 30
         elif move.direction == Direction.Left:
             score += 5
         elif move.direction == Direction.Right:
             score += 5
         elif move.direction == Direction.UpLeft:
-            score -= 15
+            score -= 25
         elif move.direction == Direction.UpRight:
-            score -= 15
+            score -= 25
         
-        # 跳跃奖励
+        # 3. 跳跃奖励（跳跃移动更远）
         if move.is_jump:
-            score += 25
+            score += 40
+            # 向下跳跃更好
             if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 15
+                score += 30
+        
+        # 4. 到达目标区域奖励
+        if (new_q, new_r) in self.target_positions:
+            score += 100
+        
+        # 5. 避免离开目标区域
+        if (q, r) in self.target_positions and (new_q, new_r) not in self.target_positions:
+            score -= 150
         
         return score
+
+    def _sort_moves(self, legal_indices, obs, has_jump, num_legal):
+        """
+        对移动进行排序，好的移动优先
+        这样可以提高Alpha-Beta剪枝效率
+        """
+        move_scores = []
+        for action_idx in legal_indices:
+            move = action_to_move(action_idx, self.n)
+            score = self._evaluate_move(move, obs, has_jump, num_legal)
+            move_scores.append((action_idx, score))
+        
+        # 按分数降序排序
+        move_scores.sort(key=lambda x: x[1], reverse=True)
+        return [m[0] for m in move_scores]
 
     def _minimax(self, legal_indices, obs, depth, alpha, beta, is_maximizing):
         """
@@ -271,20 +373,26 @@ class MinimaxPolicy(Policy):
         num_legal = len(legal_indices)
         
         if depth == 0 or num_legal == 0:
-            return 0, legal_indices[0] if num_legal > 0 else self.action_space_dim - 1
+            # 叶节点：返回棋盘状态评估
+            board_eval = self._evaluate_board_state(obs)
+            return board_eval, legal_indices[0] if num_legal > 0 else self.action_space_dim - 1
         
-        best_action = legal_indices[0]
+        # 移动排序优化
+        sorted_indices = self._sort_moves(legal_indices, obs, has_jump, num_legal)
+        best_action = sorted_indices[0]
         
         if is_maximizing:
             max_eval = float('-inf')
-            for action_idx in legal_indices:
+            for action_idx in sorted_indices:
                 move = action_to_move(action_idx, self.n)
-                eval_score = self._evaluate_move(move, has_jump, num_legal)
+                # 单步评估 + 位置评估
+                move_score = self._evaluate_move(move, obs, has_jump, num_legal)
+                eval_score = move_score + self._evaluate_board_state(obs) * 0.1
                 
-                # Alpha-Beta剪枝
                 if eval_score > max_eval:
                     max_eval = eval_score
                     best_action = action_idx
+                
                 alpha = max(alpha, eval_score)
                 if beta <= alpha:
                     break  # Beta剪枝
@@ -292,13 +400,15 @@ class MinimaxPolicy(Policy):
             return max_eval, best_action
         else:
             min_eval = float('inf')
-            for action_idx in legal_indices:
+            for action_idx in sorted_indices:
                 move = action_to_move(action_idx, self.n)
-                eval_score = self._evaluate_move(move, has_jump, num_legal)
+                move_score = self._evaluate_move(move, obs, has_jump, num_legal)
+                eval_score = move_score + self._evaluate_board_state(obs) * 0.1
                 
                 if eval_score < min_eval:
                     min_eval = eval_score
                     best_action = action_idx
+                
                 beta = min(beta, eval_score)
                 if beta <= alpha:
                     break  # Alpha剪枝
@@ -317,6 +427,10 @@ class MinimaxPolicy(Policy):
                 actions.append(self.action_space_dim - 1)
                 continue
             
+            if len(legal_indices) == 1:
+                actions.append(legal_indices[0])
+                continue
+            
             # 使用Minimax with Alpha-Beta剪枝
             _, best_action = self._minimax(
                 legal_indices, obs, 
@@ -326,462 +440,6 @@ class MinimaxPolicy(Policy):
                 is_maximizing=True
             )
             
-            actions.append(best_action)
-        
-        return actions, [], {}
-
-    def compute_single_action(self, obs, state=None, prev_action=None,
-                              prev_reward=None, info=None, episode=None, **kwargs):
-        return self.compute_actions(
-            [obs],
-            state_batches=[state],
-            prev_action_batch=[prev_action],
-            prev_reward_batch=[prev_reward],
-            info_batch=[info],
-            episodes=[episode],
-            **kwargs
-        )[0]
-
-
-# =============================================================================
-# 新算法: Adaptive Strategy Policy - 自适应策略
-# 根据游戏阶段自动调整策略
-# =============================================================================
-class AdaptiveStrategyPolicy(Policy):
-    """
-    自适应策略
-    根据游戏阶段（开局、中局、残局）使用不同的策略
-    更激进的跳跃链利用
-    """
-    def __init__(self, triangle_size=4, config={}, aggression=1.0):
-        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
-        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
-        super().__init__(observation_space, action_space, config)
-        self.triangle_size = triangle_size
-        self.action_space_dim = action_space.n
-        self.n = triangle_size
-        self.aggression = aggression  # 进攻性参数
-        
-        # 预计算目标区域
-        n = triangle_size
-        self.target_positions = set()
-        for i in range(n):
-            for j in range(0, n - i):
-                q = -n + j
-                r = n + 1 + i
-                self.target_positions.add((q, r))
-        
-        # 起始区域
-        self.start_positions = set()
-        for i in range(n):
-            for j in range(0, n - i):
-                q = n - j
-                r = -n - 1 - i
-                self.start_positions.add((q, r))
-
-    def _has_jump_in_progress(self, obs):
-        """检查是否有跳跃正在进行中"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        return np.any(observation[:, :, 2] == 1)
-    
-    def _get_jump_source_position(self, obs):
-        """获取跳跃源位置（正在跳跃的棋子）"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        
-        for qi in range(board_size):
-            for ri in range(board_size):
-                if observation[qi, ri, 2] == 1:
-                    q = qi - 2 * n
-                    r = ri - 2 * n
-                    return (q, r)
-        return None
-    
-    def _parse_board(self, obs):
-        """解析棋盘状态"""
-        n = self.n
-        board_size = 4 * n + 1
-        observation = obs["observation"].reshape(board_size, board_size, 4)
-        
-        my_pieces = []
-        opp_pieces = []
-        
-        for qi in range(board_size):
-            for ri in range(board_size):
-                q = qi - 2 * n
-                r = ri - 2 * n
-                if observation[qi, ri, 0] == 1:
-                    my_pieces.append((q, r))
-                if observation[qi, ri, 1] == 1:
-                    opp_pieces.append((q, r))
-        
-        return my_pieces, opp_pieces
-
-    def _get_game_phase(self, my_pieces, opp_pieces):
-        """
-        判断游戏阶段
-        返回: 'opening', 'midgame', 'endgame'
-        """
-        n = self.n
-        total_pieces = n * (n + 1) // 2
-        
-        # 计算我方进度
-        my_in_target = sum(1 for p in my_pieces if p in self.target_positions)
-        my_left_start = sum(1 for p in my_pieces if p in self.start_positions)
-        
-        # 计算平均r坐标（进度指标）
-        avg_r = sum(p[1] for p in my_pieces) / len(my_pieces) if my_pieces else 0
-        
-        if my_left_start >= total_pieces * 0.5:
-            return 'opening'
-        elif my_in_target >= total_pieces * 0.5:
-            return 'endgame'
-        else:
-            return 'midgame'
-
-    def _evaluate_move_opening(self, move, has_jump, num_legal):
-        """开局策略：快速展开，重视跳跃链"""
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -300
-            return -5
-        
-        score = 0.0
-        
-        # 开局重视快速前进
-        direction_scores = {
-            Direction.DownLeft: 40,
-            Direction.DownRight: 40,
-            Direction.Left: 10,
-            Direction.Right: 10,
-            Direction.UpLeft: -40,
-            Direction.UpRight: -40,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
-        # 开局非常重视跳跃
-        if move.is_jump:
-            if has_jump:
-                score += 80
-            else:
-                score += 60
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 50
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 20
-        
-        return score * self.aggression
-
-    def _evaluate_move_midgame(self, move, has_jump, num_legal):
-        """中局策略：平衡前进和跳跃机会"""
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -250
-            return -3
-        
-        score = 0.0
-        
-        direction_scores = {
-            Direction.DownLeft: 35,
-            Direction.DownRight: 35,
-            Direction.Left: 8,
-            Direction.Right: 8,
-            Direction.UpLeft: -30,
-            Direction.UpRight: -30,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
-        if move.is_jump:
-            if has_jump:
-                score += 70
-            else:
-                score += 55
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 40
-            elif move.direction in [Direction.Left, Direction.Right]:
-                score += 15
-            elif has_jump:
-                score += 5
-        
-        return score
-
-    def _evaluate_move_endgame(self, move, has_jump, num_legal):
-        """残局策略：精确进入目标区域"""
-        if move == Move.END_TURN:
-            if has_jump and num_legal > 1:
-                return -200
-            return -2
-        
-        score = 0.0
-        
-        # 残局更重视精确方向
-        direction_scores = {
-            Direction.DownLeft: 45,
-            Direction.DownRight: 45,
-            Direction.Left: 5,
-            Direction.Right: 5,
-            Direction.UpLeft: -50,
-            Direction.UpRight: -50,
-        }
-        score += direction_scores.get(move.direction, 0)
-        
-        if move.is_jump:
-            if has_jump:
-                score += 65
-            else:
-                score += 50
-            
-            if move.direction in [Direction.DownLeft, Direction.DownRight]:
-                score += 45
-        
-        return score
-
-    def _search_best_move(self, legal_indices, obs):
-        """根据游戏阶段选择最佳移动"""
-        has_jump = self._has_jump_in_progress(obs)
-        num_legal = len(legal_indices)
-        my_pieces, opp_pieces = self._parse_board(obs)
-        
-        if num_legal == 0:
-            return self.action_space_dim - 1
-        
-        # 判断游戏阶段
-        phase = self._get_game_phase(my_pieces, opp_pieces)
-        
-        # 根据阶段选择评估函数
-        if phase == 'opening':
-            evaluate_fn = self._evaluate_move_opening
-        elif phase == 'endgame':
-            evaluate_fn = self._evaluate_move_endgame
-        else:
-            evaluate_fn = self._evaluate_move_midgame
-        
-        # 评估所有合法移动
-        scored_moves = []
-        for action_idx in legal_indices:
-            move = action_to_move(action_idx, self.n)
-            score = evaluate_fn(move, has_jump, num_legal)
-            scored_moves.append((score, action_idx))
-        
-        scored_moves.sort(key=lambda x: x[0], reverse=True)
-        return scored_moves[0][1]
-
-    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
-                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        
-        for obs in obs_batch:
-            action_mask = obs["action_mask"]
-            legal_indices = np.where(action_mask == 1)[0]
-            
-            if len(legal_indices) == 0:
-                actions.append(self.action_space_dim - 1)
-                continue
-            
-            best_action = self._search_best_move(legal_indices, obs)
-            actions.append(best_action)
-        
-        return actions, [], {}
-
-    def compute_single_action(self, obs, state=None, prev_action=None,
-                              prev_reward=None, info=None, episode=None, **kwargs):
-        return self.compute_actions(
-            [obs],
-            state_batches=[state],
-            prev_action_batch=[prev_action],
-            prev_reward_batch=[prev_reward],
-            info_batch=[info],
-            episodes=[episode],
-            **kwargs
-        )[0]
-
-
-# =============================================================================
-# 强化算法: EnhancedPolicy - 深度跳跃链搜索
-# =============================================================================
-class EnhancedPolicy(Policy):
-    """
-    增强策略 - 使用深度搜索找到最佳跳跃链
-    
-    核心思想：
-    1. 对每个可能的移动，模拟执行并搜索后续最佳跳跃链
-    2. 评估整个跳跃链的总进度
-    3. 选择能够获得最大进度的移动序列
-    """
-    def __init__(self, triangle_size=4, config={}):
-        observation_space = Box(low=0, high=1, shape=((4 * triangle_size + 1) * (4 * triangle_size + 1) * 4,), dtype=np.int8)
-        action_space = Discrete((4 * triangle_size + 1) * (4 * triangle_size + 1) * 6 * 2 + 1)
-        super().__init__(observation_space, action_space, config)
-        self.triangle_size = triangle_size
-        self.action_space_dim = action_space.n
-        self.n = triangle_size
-        self.board_size = 4 * self.n + 1
-        # 目标区域
-        self.target_zone = self._compute_target_zone()
-
-    def _compute_target_zone(self):
-        """计算目标三角区域"""
-        target = set()
-        for r in range(self.n + 1, 2 * self.n + 1):
-            for q in range(-(2 * self.n - r), 1):
-                target.add((q, r))
-        return target
-
-    def _parse_board(self, obs):
-        """解析棋盘状态"""
-        observation = obs["observation"].reshape(self.board_size, self.board_size, 4)
-        
-        my_pieces = []
-        opp_pieces = []
-        has_jump_in_progress = False
-        jump_source = None
-        
-        for q_idx in range(self.board_size):
-            for r_idx in range(self.board_size):
-                q = q_idx - 2 * self.n
-                r = r_idx - 2 * self.n
-                
-                if observation[q_idx, r_idx, 0] == 1:
-                    my_pieces.append((q, r))
-                if observation[q_idx, r_idx, 1] == 1:
-                    opp_pieces.append((q, r))
-                if observation[q_idx, r_idx, 2] == 1:
-                    has_jump_in_progress = True
-                    jump_source = (q, r)
-        
-        return my_pieces, opp_pieces, has_jump_in_progress, jump_source
-
-    def _is_valid_position(self, q, r):
-        """检查位置是否在棋盘内"""
-        s = -q - r
-        return abs(q) <= 2*self.n and abs(r) <= 2*self.n and abs(s) <= 2*self.n
-
-    def _find_best_jump_chain(self, start_q, start_r, all_occupied, visited=None, depth=0):
-        """
-        递归搜索从某位置开始的最佳跳跃链
-        返回: (最大r进度, 跳跃次数)
-        """
-        if visited is None:
-            visited = {(start_q, start_r)}
-        
-        if depth > 10:  # 防止无限递归
-            return 0, 0
-        
-        best_progress = 0
-        best_jumps = 0
-        
-        for direction in Direction:
-            dq, dr = DIRECTION_DELTAS[direction]
-            mid_q, mid_r = start_q + dq, start_r + dr
-            land_q, land_r = start_q + 2*dq, start_r + 2*dr
-            
-            # 检查跳跃条件
-            if (mid_q, mid_r) in all_occupied:  # 有棋子可以跳过
-                if (land_q, land_r) not in all_occupied:  # 落点为空
-                    if self._is_valid_position(land_q, land_r):  # 落点在棋盘内
-                        if (land_q, land_r) not in visited:  # 未访问过
-                            # 计算这一跳的进度
-                            jump_progress = land_r - start_r
-                            
-                            # 递归搜索后续跳跃
-                            new_visited = visited | {(land_q, land_r)}
-                            new_occupied = (all_occupied - {(start_q, start_r)}) | {(land_q, land_r)}
-                            further_progress, further_jumps = self._find_best_jump_chain(
-                                land_q, land_r, new_occupied, new_visited, depth + 1
-                            )
-                            
-                            total_progress = jump_progress + further_progress
-                            total_jumps = 1 + further_jumps
-                            
-                            if total_progress > best_progress or (total_progress == best_progress and total_jumps > best_jumps):
-                                best_progress = total_progress
-                                best_jumps = total_jumps
-        
-        return best_progress, best_jumps
-
-    def _evaluate_move(self, move, my_pieces, opp_pieces, has_jump):
-        """评估移动的价值"""
-        if move == Move.END_TURN:
-            return -1  # 结束回合的基础分
-        
-        score = 0.0
-        q, r = move.position.q, move.position.r
-        dq, dr = DIRECTION_DELTAS[move.direction]
-        
-        if move.is_jump:
-            new_q, new_r = q + 2*dq, r + 2*dr
-            step = 2
-        else:
-            new_q, new_r = q + dq, r + dr
-            step = 1
-        
-        # 基础进度分 (r方向的移动)
-        r_progress = new_r - r
-        score += r_progress * 100
-        
-        all_occupied = set(my_pieces) | set(opp_pieces)
-        
-        if move.is_jump:
-            # 跳跃奖励
-            score += 50
-            
-            # 搜索后续跳跃链潜力
-            new_occupied = (all_occupied - {(q, r)}) | {(new_q, new_r)}
-            chain_progress, chain_jumps = self._find_best_jump_chain(new_q, new_r, new_occupied)
-            score += chain_progress * 80  # 后续跳跃链的进度
-            score += chain_jumps * 30  # 每次跳跃的奖励
-        
-        # 目标区域奖励
-        if (new_q, new_r) in self.target_zone:
-            if (q, r) not in self.target_zone:
-                score += 200  # 进入目标区域
-            score += 100  # 在目标区域内
-        elif (q, r) in self.target_zone:
-            score -= 500  # 离开目标区域惩罚
-        
-        # 后排棋子优先移动
-        if r < 0:
-            score += 20  # 鼓励移动后排棋子
-        
-        return score
-
-    def _search_best_move(self, legal_indices, obs):
-        """搜索最佳移动"""
-        if len(legal_indices) == 0:
-            return self.action_space_dim - 1
-        
-        if len(legal_indices) == 1:
-            return legal_indices[0]
-        
-        my_pieces, opp_pieces, has_jump, jump_source = self._parse_board(obs)
-        
-        scored_moves = []
-        for action_idx in legal_indices:
-            move = action_to_move(action_idx, self.n)
-            score = self._evaluate_move(move, my_pieces, opp_pieces, has_jump)
-            scored_moves.append((score, action_idx))
-        
-        scored_moves.sort(key=lambda x: x[0], reverse=True)
-        return scored_moves[0][1]
-
-    def compute_actions(self, obs_batch, state_batches=None, prev_action_batch=None,
-                       prev_reward_batch=None, info_batch=None, episodes=None, **kwargs):
-        actions = []
-        
-        for obs in obs_batch:
-            action_mask = obs["action_mask"]
-            legal_indices = np.where(action_mask == 1)[0]
-            
-            if len(legal_indices) == 0:
-                actions.append(self.action_space_dim - 1)
-                continue
-            
-            best_action = self._search_best_move(legal_indices, obs)
             actions.append(best_action)
         
         return actions, [], {}
